@@ -1,13 +1,45 @@
 import { Character } from '../../types';
-import { StoryBible, StoryControl, StoryState, ArcDefinition, CharacterGate, SpoilerGate, CharacterRegistryEntry, WorldFact, NarrativeExposureRules } from './types';
+import { StoryBible, StoryControl, StoryState, ArcDefinition, CharacterGate, SpoilerGate, CharacterRegistryEntry, WorldFact, NarrativeExposureRules, STORY_CONTROL_SCHEMA_VERSION } from './types';
 import { getCurrentArc, calculateArcProgress } from './arcController';
+import { createStoryControlFromBlueprint, parseBlueprintContent, validateBlueprintV3Object } from './blueprintParser';
+import { isRecord } from './runtimeValidation';
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalize(value[key])]));
+}
+
+export function stableStringify(value: unknown): string {
+  return JSON.stringify(canonicalize(value));
+}
 
 /**
  * Tính hash xác thực để kiểm tra xem Bible có thay đổi không
  */
 export function computeBibleHash(bible: StoryBible): string {
-  const charNames = (bible.characters || []).map(c => c.name).sort().join(',');
-  const source = `${bible.seedTitle}|${bible.genre}|${bible.seriesPremise}|${bible.worldNotes}|${bible.outline}|${charNames}|${bible.totalPlannedChapters || 600}`;
+  const source = stableStringify({
+    storyControlSchemaVersion: STORY_CONTROL_SCHEMA_VERSION,
+    seedTitle: bible.seedTitle,
+    genre: bible.genre,
+    seriesPremise: bible.seriesPremise,
+    continuitySummary: bible.continuitySummary,
+    worldNotes: bible.worldNotes,
+    charNotes: bible.charNotes,
+    outline: bible.outline,
+    characters: (bible.characters || []).map(character => ({
+      id: character.id,
+      name: character.name,
+      gender: character.gender,
+      age: character.age,
+      role: character.role,
+      appearance: character.appearance,
+      personality: character.personality
+    })),
+    totalPlannedChapters: bible.totalPlannedChapters || 600,
+    storyEngineSettingsV3: bible.storyEngineSettingsV3,
+    blueprintV3: bible.blueprintV3
+  });
   let hash = 0;
   for (let i = 0; i < source.length; i++) {
     const char = source.charCodeAt(i);
@@ -21,104 +53,14 @@ export function computeBibleHash(bible: StoryBible): string {
  * Trích xuất và chuẩn hóa Blueprint V3 nếu được cung cấp trực tiếp
  */
 export function parseBlueprintV3(rawContent: string): StoryControl | null {
-  try {
-    if (!rawContent || !rawContent.trim()) return null;
-    
-    // Nếu là file JSON thuần
-    if (rawContent.trim().startsWith('{') && rawContent.trim().endsWith('}')) {
-      const parsed = JSON.parse(rawContent);
-      if (parsed.arcs && parsed.arcs.length > 0) {
-        return ensureStoryControlV3Defaults(parsed);
-      }
-    }
-
-    // Nếu là file có block [STORY_ENGINE_SETTINGS_V3] hoặc [BLUEPRINT_V3]
-    const match = rawContent.match(/\[(?:STORY_ENGINE_SETTINGS_V3|BLUEPRINT_V3)\]\s*\n([\s\S]*?)(?=\n\[[A-Z0-9_]+\]|$)/i);
-    if (match && match[1]) {
-      const jsonStr = match[1].replace(/```json/g, '').replace(/```/g, '').trim();
-      const parsed = JSON.parse(jsonStr);
-      if (parsed.arcs && parsed.arcs.length > 0) {
-        return ensureStoryControlV3Defaults(parsed);
-      }
-    }
-  } catch (err) {
-    console.warn('[parseBlueprintV3] Failed to parse custom blueprint JSON:', err);
-  }
-  return null;
+  return parseBlueprintContent(rawContent);
 }
 
 /**
  * Đảm bảo các trường mặc định cho StoryControl V3
  */
-function ensureStoryControlV3Defaults(parsed: any): StoryControl {
-  const arcs: ArcDefinition[] = Array.isArray(parsed.arcs) ? parsed.arcs.map((a: any, idx: number) => ({
-    id: a.id || `arc_${idx + 1}`,
-    title: a.title || `Hồi ${idx + 1}`,
-    startChapter: Number(a.startChapter) || (idx * 15 + 1),
-    endChapter: Number(a.endChapter) || ((idx + 1) * 15),
-    theme: a.theme || 'Trưởng thành & Khám phá',
-    coreConflict: a.coreConflict || 'Đối đầu thử thách',
-    climaxChapter: Number(a.climaxChapter) || ((idx + 1) * 15 - 2),
-    pacing: a.pacing || 'accelerating',
-    unlockedCharacterIds: Array.isArray(a.unlockedCharacterIds) ? a.unlockedCharacterIds : [],
-    keyMilestones: Array.isArray(a.keyMilestones) ? a.keyMilestones : [],
-    worldBuildingFocus: a.worldBuildingFocus || 'Mở rộng thế giới',
-    forbiddenSpoilers: Array.isArray(a.forbiddenSpoilers) ? a.forbiddenSpoilers : []
-  })) : [];
-
-  const characterRegistry: Record<string, CharacterRegistryEntry> = {};
-  if (parsed.characterRegistry && typeof parsed.characterRegistry === 'object') {
-    for (const key of Object.keys(parsed.characterRegistry)) {
-      const char = parsed.characterRegistry[key];
-      characterRegistry[key] = {
-        id: char.id || key,
-        name: char.name || key,
-        aliasSet: Array.isArray(char.aliasSet) ? char.aliasSet : [char.name || key],
-        role: char.role || 'Nhân vật',
-        gender: char.gender || 'Chưa rõ',
-        age: char.age || 'Chưa rõ',
-        initialFaction: char.initialFaction || 'Tự do',
-        appearance: char.appearance || '',
-        personality: char.personality || '',
-        coreMotivation: char.coreMotivation || '',
-        forbiddenSpoilers: Array.isArray(char.forbiddenSpoilers) ? char.forbiddenSpoilers : [],
-        unlockCondition: char.unlockCondition || { type: 'arc', value: 'arc_1' },
-        allowedArcs: Array.isArray(char.allowedArcs) ? char.allowedArcs : arcs.map(a => a.id),
-        deathOrExitChapter: char.deathOrExitChapter
-      };
-    }
-  }
-
-  const worldFacts: WorldFact[] = Array.isArray(parsed.worldFacts) ? parsed.worldFacts : [];
-  const narrativeExposureRules: NarrativeExposureRules = parsed.narrativeExposureRules || {
-    prohibitedTopicsUntilChapter: [],
-    foreshadowingDirectives: [],
-    mandatoryKnowledgeByChapter: []
-  };
-
-  return {
-    version: 'v3',
-    sourceHash: parsed.sourceHash || `custom_${Date.now()}`,
-    totalChapters: Number(parsed.totalChapters) || (arcs.length > 0 ? arcs[arcs.length - 1].endChapter : 600),
-    arcs,
-    characterRegistry,
-    worldFacts,
-    narrativeExposureRules,
-    characterGates: Array.isArray(parsed.characterGates) ? parsed.characterGates : [],
-    spoilerGates: Array.isArray(parsed.spoilerGates) ? parsed.spoilerGates : [],
-    continuityRules: {
-      enforcePhysicalInjuryDuration: parsed.continuityRules?.enforcePhysicalInjuryDuration ?? true,
-      enforceResourceTracking: parsed.continuityRules?.enforceResourceTracking ?? true,
-      enforceRelationshipMemory: parsed.continuityRules?.enforceRelationshipMemory ?? true,
-      enforceClueDiscoveryProgression: parsed.continuityRules?.enforceClueDiscoveryProgression ?? true,
-    },
-    pacingRules: {
-      minWordsPerChapter: Number(parsed.pacingRules?.minWordsPerChapter) || 2000,
-      maxWordsPerChapter: Number(parsed.pacingRules?.maxWordsPerChapter) || 3500,
-      climaxPacingMultiplier: Number(parsed.pacingRules?.climaxPacingMultiplier) || 1.3,
-      cooldownChaptersAfterClimax: Number(parsed.pacingRules?.cooldownChaptersAfterClimax) || 2
-    }
-  };
+function ensureStoryControlV3Defaults(parsed: unknown): StoryControl {
+  return createStoryControlFromBlueprint(validateBlueprintV3Object(parsed));
 }
 
 /**
@@ -131,6 +73,11 @@ export async function compileStoryControl(
 ): Promise<StoryControl> {
   const hash = computeBibleHash(bible);
   const totalChapters = bible.totalPlannedChapters || 600;
+
+  // Blueprint imported from the dedicated V3 block is authoritative.
+  if (bible.blueprintV3) {
+    return createStoryControlFromBlueprint(bible.blueprintV3, hash, bible.storyEngineSettingsV3);
+  }
 
   // 1. Kiểm tra xem có Blueprint V3 sẵn trong outline / notes không
   const customBlueprint = parseBlueprintV3(bible.outline) || parseBlueprintV3(bible.worldNotes);
@@ -231,9 +178,10 @@ HÃY TRẢ VỀ DUY NHẤT 1 JSON VỚI ĐỊNH DẠNG SAU (Không thêm text ma
     try {
       const rawRes = await runner(prompt);
       const cleaned = rawRes.replace(/```json/g, '').replace(/```/g, '').trim();
-      const parsed = JSON.parse(cleaned);
-      parsed.sourceHash = hash;
-      return ensureStoryControlV3Defaults(parsed);
+      const parsed: unknown = JSON.parse(cleaned);
+      const control = ensureStoryControlV3Defaults(parsed);
+      control.sourceHash = hash;
+      return control;
     } catch (e) {
       console.warn('[StoryEngineCompiler] AI generation failed, falling back to deterministic compiler:', e);
     }
@@ -390,6 +338,7 @@ export function createDeterministicStoryControl(bible: StoryBible, sourceHash: s
 
   return {
     version: 'v3',
+    schemaVersion: STORY_CONTROL_SCHEMA_VERSION,
     sourceHash,
     totalChapters,
     arcs,
@@ -409,7 +358,9 @@ export function createDeterministicStoryControl(bible: StoryBible, sourceHash: s
       maxWordsPerChapter: 3500,
       climaxPacingMultiplier: 1.3,
       cooldownChaptersAfterClimax: 2
-    }
+    },
+    mysteryThreads: [],
+    authorOnlySecrets: []
   };
 }
 

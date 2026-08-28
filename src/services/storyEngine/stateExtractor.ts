@@ -1,13 +1,432 @@
 import { Character, CreativeChapter } from '../../types';
-import { StoryState, StoryControl, ChapterMemory, CharacterInjury, StoryRelationship, StoryClue, LongTermSeed } from './types';
+import {
+  ChapterMemory,
+  CharacterInjury,
+  CharacterState,
+  LongTermSeed,
+  StoryClue,
+  StoryControl,
+  StoryRelationship,
+  StoryState
+} from './types';
 import { getCurrentArc, calculateArcProgress } from './arcController';
+import {
+  isRecord,
+  normalizeFiniteNumber,
+  normalizePositiveInteger,
+  normalizeStringArray,
+  normalizeText,
+  stripJsonFence
+} from './runtimeValidation';
 
-/**
- * State Extractor V3:
- * Chạy sau khi batch chương được nghiệm thu (QA Pass).
- * Dùng Flash model (hoặc fallback deterministic) để bóc tách state delta,
- * sau đó thực hiện deterministic merge vào StoryState và tạo ChapterMemory index.
- */
+type InjurySeverity = CharacterInjury['severity'];
+
+export interface StateInjuryDelta {
+  characterName: string;
+  type: string;
+  bodyPart: string;
+  severity: InjurySeverity;
+  durationChapters: number;
+  restrictions: string[];
+}
+
+export interface StateRelationshipDelta {
+  characterA: string;
+  characterB: string;
+  trust?: number;
+  hostility?: number;
+  stage?: string;
+  notes?: string;
+}
+
+export interface StateClueDelta {
+  clue: string;
+  discoveredBy?: string;
+  interpretations: string[];
+  actualTruthHidden?: string;
+}
+
+export interface StateSeedDelta {
+  meaningHidden: string;
+  eligibleCallbackFromChapter?: number;
+}
+
+export interface StateCharacterDelta {
+  name: string;
+  gender?: string;
+  age?: string;
+  role?: string;
+  appearance?: string;
+  personality?: string;
+}
+
+export interface StateChapterSummaryDelta {
+  chapterNumber: number;
+  summary?: string;
+  charactersInvolved: string[];
+  locations: string[];
+  clues: string[];
+  injuries: string[];
+  relationshipChanges: string[];
+  resources: string[];
+  longTermSeeds: string[];
+}
+
+export interface StateDeltaV3 {
+  injuries: StateInjuryDelta[];
+  relationships: StateRelationshipDelta[];
+  resources: {
+    money?: string;
+    businesses?: string[];
+    properties?: string[];
+    equipment?: string[];
+  };
+  clues: StateClueDelta[];
+  seeds: StateSeedDelta[];
+  unresolvedThreads: string[];
+  resolvedThreads: string[];
+  newCharacters: StateCharacterDelta[];
+  chapterSummaries: StateChapterSummaryDelta[];
+  batchSummary?: string;
+}
+
+export interface StateDeltaParseResult {
+  delta: StateDeltaV3;
+  warnings: string[];
+  usedFallback: boolean;
+}
+
+function emptyStateDelta(): StateDeltaV3 {
+  return {
+    injuries: [],
+    relationships: [],
+    resources: {},
+    clues: [],
+    seeds: [],
+    unresolvedThreads: [],
+    resolvedThreads: [],
+    newCharacters: [],
+    chapterSummaries: []
+  };
+}
+
+function warnAboutDiscardedArrayItems(
+  value: unknown,
+  normalizedLength: number,
+  field: string,
+  warnings: string[]
+): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    warnings.push(`${field} bị bỏ vì không phải array.`);
+    return;
+  }
+  if (value.length > normalizedLength) warnings.push(`${field} có phần tử sai type đã bị bỏ.`);
+}
+
+function normalizeBoundedNumber(value: unknown, minimum: number, maximum: number): number | undefined {
+  const number = normalizeFiniteNumber(value);
+  if (number === null) return undefined;
+  return Math.min(maximum, Math.max(minimum, number));
+}
+
+function normalizeInjuries(value: unknown, warnings: string[]): StateInjuryDelta[] {
+  if (!Array.isArray(value)) return [];
+  const result: StateInjuryDelta[] = [];
+  value.forEach((entry, index) => {
+    if (!isRecord(entry)) {
+      warnings.push(`injuries[${index}] bị bỏ vì không phải object.`);
+      return;
+    }
+    const characterName = normalizeText(entry.characterName);
+    if (!characterName) {
+      warnings.push(`injuries[${index}] bị bỏ vì characterName không hợp lệ.`);
+      return;
+    }
+    const validSeverities: InjurySeverity[] = ['mild', 'moderate', 'severe', 'critical'];
+    const severity = validSeverities.find(item => item === entry.severity) || 'moderate';
+    result.push({
+      characterName,
+      type: normalizeText(entry.type) || 'Chấn thương',
+      bodyPart: normalizeText(entry.bodyPart) || 'Cơ thể',
+      severity,
+      durationChapters: normalizePositiveInteger(entry.durationChapters) || (severity === 'severe' ? 10 : 5),
+      restrictions: normalizeStringArray(entry.restrictions)
+    });
+  });
+  return result;
+}
+
+function normalizeRelationships(value: unknown, warnings: string[]): StateRelationshipDelta[] {
+  if (!Array.isArray(value)) return [];
+  const result: StateRelationshipDelta[] = [];
+  value.forEach((entry, index) => {
+    if (!isRecord(entry)) {
+      warnings.push(`relationships[${index}] bị bỏ vì không phải object.`);
+      return;
+    }
+    const characterA = normalizeText(entry.characterA);
+    const characterB = normalizeText(entry.characterB);
+    if (!characterA || !characterB) {
+      warnings.push(`relationships[${index}] bị bỏ vì tên nhân vật không hợp lệ.`);
+      return;
+    }
+    result.push({
+      characterA,
+      characterB,
+      trust: normalizeBoundedNumber(entry.trust, 0, 100),
+      hostility: normalizeBoundedNumber(entry.hostility, 0, 100),
+      stage: normalizeText(entry.stage) || undefined,
+      notes: normalizeText(entry.notes) || undefined
+    });
+  });
+  return result;
+}
+
+function normalizeClues(value: unknown, warnings: string[]): StateClueDelta[] {
+  if (!Array.isArray(value)) return [];
+  const result: StateClueDelta[] = [];
+  value.forEach((entry, index) => {
+    if (!isRecord(entry)) {
+      warnings.push(`clues[${index}] bị bỏ vì không phải object.`);
+      return;
+    }
+    const clue = normalizeText(entry.clue);
+    if (!clue) {
+      warnings.push(`clues[${index}] bị bỏ vì clue không hợp lệ.`);
+      return;
+    }
+    result.push({
+      clue,
+      discoveredBy: normalizeText(entry.discoveredBy) || undefined,
+      interpretations: normalizeStringArray(entry.interpretations),
+      actualTruthHidden: normalizeText(entry.actualTruthHidden) || undefined
+    });
+  });
+  return result;
+}
+
+function normalizeSeeds(value: unknown, warnings: string[]): StateSeedDelta[] {
+  if (!Array.isArray(value)) return [];
+  const result: StateSeedDelta[] = [];
+  value.forEach((entry, index) => {
+    if (!isRecord(entry)) {
+      warnings.push(`seeds[${index}] bị bỏ vì không phải object.`);
+      return;
+    }
+    const meaningHidden = normalizeText(entry.meaningHidden);
+    if (!meaningHidden) {
+      warnings.push(`seeds[${index}] bị bỏ vì meaningHidden không hợp lệ.`);
+      return;
+    }
+    result.push({
+      meaningHidden,
+      eligibleCallbackFromChapter: normalizePositiveInteger(entry.eligibleCallbackFromChapter) || undefined
+    });
+  });
+  return result;
+}
+
+function normalizeNewCharacters(value: unknown, warnings: string[]): StateCharacterDelta[] {
+  if (!Array.isArray(value)) return [];
+  const result: StateCharacterDelta[] = [];
+  value.forEach((entry, index) => {
+    if (!isRecord(entry)) {
+      warnings.push(`newCharacters[${index}] bị bỏ vì không phải object.`);
+      return;
+    }
+    const name = normalizeText(entry.name);
+    if (!name) {
+      warnings.push(`newCharacters[${index}] bị bỏ vì name không hợp lệ.`);
+      return;
+    }
+    result.push({
+      name,
+      gender: normalizeText(entry.gender) || undefined,
+      age: normalizeText(entry.age) || (typeof entry.age === 'number' && Number.isFinite(entry.age) ? String(entry.age) : undefined),
+      role: normalizeText(entry.role) || undefined,
+      appearance: normalizeText(entry.appearance) || undefined,
+      personality: normalizeText(entry.personality) || undefined
+    });
+  });
+  return result;
+}
+
+function normalizeChapterSummaries(value: unknown, warnings: string[]): StateChapterSummaryDelta[] {
+  if (!Array.isArray(value)) return [];
+  const result: StateChapterSummaryDelta[] = [];
+  value.forEach((entry, index) => {
+    if (!isRecord(entry)) {
+      warnings.push(`chapterSummaries[${index}] bị bỏ vì không phải object.`);
+      return;
+    }
+    const chapterNumber = normalizePositiveInteger(entry.chapterNumber);
+    if (chapterNumber === null) {
+      warnings.push(`chapterSummaries[${index}] bị bỏ vì chapterNumber không hợp lệ.`);
+      return;
+    }
+    result.push({
+      chapterNumber,
+      summary: normalizeText(entry.summary) || undefined,
+      charactersInvolved: normalizeStringArray(entry.charactersInvolved),
+      locations: normalizeStringArray(entry.locations),
+      clues: normalizeStringArray(entry.clues),
+      injuries: normalizeStringArray(entry.injuries),
+      relationshipChanges: normalizeStringArray(entry.relationshipChanges),
+      resources: normalizeStringArray(entry.resources),
+      longTermSeeds: normalizeStringArray(entry.longTermSeeds)
+    });
+  });
+  return result;
+}
+
+function normalizeResources(value: unknown): StateDeltaV3['resources'] {
+  if (!isRecord(value)) return {};
+  return {
+    money: normalizeText(value.money) || undefined,
+    businesses: normalizeStringArray(value.businesses),
+    properties: normalizeStringArray(value.properties),
+    equipment: normalizeStringArray(value.equipment)
+  };
+}
+
+export function normalizeStateDelta(value: unknown): StateDeltaParseResult {
+  const fallback = emptyStateDelta();
+  if (!isRecord(value)) {
+    return { delta: fallback, warnings: ['State delta root không phải object.'], usedFallback: true };
+  }
+  const warnings: string[] = [];
+  const unresolvedThreads = normalizeStringArray(value.unresolvedThreads);
+  const resolvedThreads = normalizeStringArray(value.resolvedThreads);
+  const delta: StateDeltaV3 = {
+    injuries: normalizeInjuries(value.injuries, warnings),
+    relationships: normalizeRelationships(value.relationships, warnings),
+    resources: normalizeResources(value.resources),
+    clues: normalizeClues(value.clues, warnings),
+    seeds: normalizeSeeds(value.seeds, warnings),
+    unresolvedThreads,
+    resolvedThreads,
+    newCharacters: normalizeNewCharacters(value.newCharacters, warnings),
+    chapterSummaries: normalizeChapterSummaries(value.chapterSummaries, warnings),
+    batchSummary: normalizeText(value.batchSummary) || undefined
+  };
+  warnAboutDiscardedArrayItems(value.unresolvedThreads, unresolvedThreads.length, 'unresolvedThreads', warnings);
+  warnAboutDiscardedArrayItems(value.resolvedThreads, resolvedThreads.length, 'resolvedThreads', warnings);
+  if (value.resources !== undefined && !isRecord(value.resources)) warnings.push('resources bị bỏ vì không phải object.');
+  if (value.batchSummary !== undefined && !delta.batchSummary) warnings.push('batchSummary bị bỏ vì không phải chuỗi hợp lệ.');
+  return { delta, warnings, usedFallback: false };
+}
+
+export function parseStateDeltaResponse(rawResponse: string): StateDeltaParseResult {
+  try {
+    const parsed: unknown = JSON.parse(stripJsonFence(rawResponse));
+    return normalizeStateDelta(parsed);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      delta: emptyStateDelta(),
+      warnings: [`State Extractor trả JSON không hợp lệ: ${detail}`],
+      usedFallback: true
+    };
+  }
+}
+
+function normalizeExistingInjuries(value: unknown, endChapter: number): CharacterInjury[] {
+  if (!Array.isArray(value)) return [];
+  const result: CharacterInjury[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const receivedChapter = normalizePositiveInteger(entry.receivedChapter);
+    const expectedRecoveryChapter = normalizePositiveInteger(entry.expectedRecoveryChapter);
+    if (receivedChapter === null || expectedRecoveryChapter === null || expectedRecoveryChapter <= endChapter) continue;
+    const severities: InjurySeverity[] = ['mild', 'moderate', 'severe', 'critical'];
+    result.push({
+      type: normalizeText(entry.type) || 'Chấn thương',
+      bodyPart: normalizeText(entry.bodyPart) || 'Cơ thể',
+      severity: severities.find(item => item === entry.severity) || 'moderate',
+      receivedChapter,
+      expectedRecoveryChapter,
+      restrictions: normalizeStringArray(entry.restrictions)
+    });
+  }
+  return result;
+}
+
+function cloneCharacterStates(value: unknown, endChapter: number): Record<string, CharacterState> {
+  if (!isRecord(value)) return {};
+  const result: Record<string, CharacterState> = {};
+  for (const [rawKey, entry] of Object.entries(value)) {
+    if (!isRecord(entry)) continue;
+    const name = normalizeText(entry.name) || normalizeText(rawKey);
+    if (!name) continue;
+    const key = name.toLocaleLowerCase('vi-VN');
+    result[key] = {
+      characterId: normalizeText(entry.characterId) || key,
+      name,
+      location: normalizeText(entry.location) || '',
+      physicalCondition: normalizeText(entry.physicalCondition) || '',
+      injuries: normalizeExistingInjuries(entry.injuries, endChapter),
+      knownFacts: normalizeStringArray(entry.knownFacts),
+      goals: normalizeStringArray(entry.goals),
+      activeFaction: normalizeText(entry.activeFaction) || undefined
+    };
+  }
+  return result;
+}
+
+function normalizeExistingRelationships(value: unknown): StoryRelationship[] {
+  if (!Array.isArray(value)) return [];
+  const result: StoryRelationship[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const characterA = normalizeText(entry.characterA);
+    const characterB = normalizeText(entry.characterB);
+    if (!characterA || !characterB) continue;
+    result.push({
+      characterA,
+      characterB,
+      trust: normalizeBoundedNumber(entry.trust, 0, 100) ?? 50,
+      hostility: normalizeBoundedNumber(entry.hostility, 0, 100) ?? 10,
+      stage: normalizeText(entry.stage) || 'Quen biết',
+      debt: normalizeText(entry.debt) || undefined,
+      lastMajorChangeChapter: normalizePositiveInteger(entry.lastMajorChangeChapter) || 1
+    });
+  }
+  return result;
+}
+
+function normalizeExistingClues(value: unknown): StoryClue[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isRecord).map((entry, index) => ({
+    id: normalizeText(entry.id) || `existing_clue_${index + 1}`,
+    clue: normalizeText(entry.clue) || '',
+    discoveredChapter: normalizePositiveInteger(entry.discoveredChapter) || 1,
+    discoveredBy: normalizeText(entry.discoveredBy) || 'Không rõ',
+    knownInterpretations: normalizeStringArray(entry.knownInterpretations),
+    actualTruthHidden: normalizeText(entry.actualTruthHidden) || '',
+    resolved: entry.resolved === true
+  })).filter(clue => clue.clue);
+}
+
+function normalizeExistingSeeds(value: unknown): LongTermSeed[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isRecord).map((entry, index) => {
+    const status: LongTermSeed['status'] = entry.status === 'foreshadowed' || entry.status === 'resolved'
+      ? entry.status : 'planted';
+    return {
+      id: normalizeText(entry.id) || `existing_seed_${index + 1}`,
+      plantedChapter: normalizePositiveInteger(entry.plantedChapter) || 1,
+      meaningHidden: normalizeText(entry.meaningHidden) || '',
+      eligibleCallbackFromChapter: normalizePositiveInteger(entry.eligibleCallbackFromChapter) || 1,
+      status
+    };
+  }).filter(seed => seed.meaningHidden);
+}
+
+function pairKey(characterA: string, characterB: string): string {
+  return [characterA.toLocaleLowerCase('vi-VN'), characterB.toLocaleLowerCase('vi-VN')].sort().join('###');
+}
+
 export async function extractAndMergeState(
   acceptedChapters: CreativeChapter[],
   previousState: StoryState,
@@ -25,259 +444,190 @@ export async function extractAndMergeState(
   const currentArc = getCurrentArc(control, startChapter);
   const endChapter = startChapter + acceptedChapters.length - 1;
   const { arcProgress } = calculateArcProgress(currentArc, endChapter);
-
-  let delta: any = {
-    injuries: [],
-    relationships: [],
-    resources: {},
-    clues: [],
-    seeds: [],
-    unresolvedThreads: [],
-    resolvedThreads: [],
-    newCharacters: [],
-    chapterSummaries: []
-  };
+  let parseResult: StateDeltaParseResult = { delta: emptyStateDelta(), warnings: [], usedFallback: true };
 
   if (runner) {
-    const sys = `Bạn là Story State Extractor cho hệ thống tiểu thuyết dài tập (Story Engine V3).
-Nhiệm vụ của bạn là phân tích các chương vừa được nghiệm thu và trích xuất các biến động trạng thái (State Delta) chính xác dưới dạng JSON.
-
-CÁC TRƯỜNG CẦN TRÍCH XUẤT:
-1. injuries: danh sách thương tích mới phát sinh [{ characterName, type, bodyPart, severity ('mild'|'moderate'|'severe'|'critical'), durationChapters, restrictions }]
-2. relationships: thay đổi quan hệ [{ characterA, characterB, trust, hostility, stage, notes }]
-3. resources: biến động tiền bạc, vật phẩm, tài nguyên
-4. clues: manh mối phát hiện [{ clue, discoveredBy, interpretations, actualTruthHidden }]
-5. seeds: hạt giống cài cắm dài hạn [{ meaningHidden, eligibleCallbackFromChapter }]
-6. unresolvedThreads: những vấn đề mới mở ra
-7. resolvedThreads: những vấn đề đã được giải quyết xong trong batch này
-8. newCharacters: nhân vật phụ mới [{ name, gender, age, role, appearance, personality }]
-9. chapterSummaries: tóm tắt từng chương [{ chapterNumber, title, summary, charactersInvolved, locations, clues, injuries, relationshipChanges, resources, longTermSeeds }]
-10. batchSummary: tóm tắt cô đọng 2-3 câu về tiến trình toàn batch`;
-
-    const prompt = `[CÁC CHƯƠNG ĐÃ NGHIỆM THU]
-${acceptedChapters.map((c, i) => `=== CHƯƠNG ${startChapter + i}: ${c.title} ===\n${c.content}\n`).join('\n\n')}
-
-Hãy trích xuất JSON delta:`;
-
+    const sys = `Bạn là Story State Extractor. Chỉ trả JSON State Delta V3. Không tự tạo author truth.`;
+    const prompt = `[CÁC CHƯƠNG ĐÃ NGHIỆM THU]\n${acceptedChapters
+      .map((chapter, index) => `=== CHƯƠNG ${startChapter + index}: ${chapter.title} ===\n${chapter.content}`)
+      .join('\n\n')}\n\nHãy trích xuất JSON delta.`;
     try {
-      const rawRes = await runner(prompt, sys);
-      const cleaned = rawRes.replace(/```json/g, '').replace(/```/g, '').trim();
-      delta = JSON.parse(cleaned);
-    } catch (err) {
-      console.warn('[extractAndMergeState] AI State Extraction failed, falling back to deterministic extraction:', err);
+      parseResult = parseStateDeltaResponse(await runner(prompt, sys));
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      parseResult = { delta: emptyStateDelta(), warnings: [`State Extractor runner lỗi: ${detail}`], usedFallback: true };
     }
   }
-
-  // --- DETERMINISTIC MERGE LOGIC ---
-  const nextCharacterStates = { ...(previousState.characterStates || {}) };
-
-  // 1. Cập nhật và làm sạch các vết thương (Injuries)
-  for (const csKey of Object.keys(nextCharacterStates)) {
-    const cs = nextCharacterStates[csKey];
-    if (cs.injuries) {
-      // Bỏ các vết thương đã quá hạn phục hồi
-      cs.injuries = cs.injuries.filter(inj => inj.expectedRecoveryChapter > endChapter);
-    }
+  if (parseResult.warnings.length) {
+    console.warn('[extractAndMergeState] State delta được chuẩn hóa:', parseResult.warnings.join(' '));
   }
+  const delta = parseResult.delta;
 
-  // Thêm vết thương mới
-  if (Array.isArray(delta?.injuries)) {
-    for (const inj of delta.injuries) {
-      const charName = inj.characterName || 'Nhân vật chính';
-      const key = charName.toLowerCase().trim();
-      if (!nextCharacterStates[key]) {
-        nextCharacterStates[key] = {
-          characterId: key,
-          name: charName,
-          location: 'Hiện trường',
-          physicalCondition: 'Bị thương',
-          injuries: [],
-          knownFacts: [],
-          goals: []
-        };
-      }
-      const duration = typeof inj.durationChapters === 'number' ? inj.durationChapters : (inj.severity === 'severe' ? 10 : 5);
-      const newInj: CharacterInjury = {
-        type: inj.type || 'Chấn thương',
-        bodyPart: inj.bodyPart || 'Thân thể',
-        severity: inj.severity || 'moderate',
-        receivedChapter: startChapter,
-        expectedRecoveryChapter: startChapter + duration,
-        restrictions: Array.isArray(inj.restrictions) ? inj.restrictions : ['Hạn chế vận động mạnh']
+  const nextCharacterStates = cloneCharacterStates(previousState.characterStates, endChapter);
+  for (const injury of delta.injuries) {
+    const key = injury.characterName.toLocaleLowerCase('vi-VN');
+    if (!nextCharacterStates[key]) {
+      nextCharacterStates[key] = {
+        characterId: key,
+        name: injury.characterName,
+        location: 'Hiện trường',
+        physicalCondition: 'Bị thương',
+        injuries: [],
+        knownFacts: [],
+        goals: []
       };
-      nextCharacterStates[key].injuries.push(newInj);
     }
-  }
-
-  // 2. Cập nhật mối quan hệ (Relationships)
-  const relationshipsMap = new Map<string, StoryRelationship>();
-  for (const r of (previousState.relationships || [])) {
-    const pairKey = [r.characterA, r.characterB].sort().join('###');
-    relationshipsMap.set(pairKey, r);
-  }
-
-  if (Array.isArray(delta?.relationships)) {
-    for (const rel of delta.relationships) {
-      if (rel.characterA && rel.characterB) {
-        const pairKey = [rel.characterA, rel.characterB].sort().join('###');
-        relationshipsMap.set(pairKey, {
-          characterA: rel.characterA,
-          characterB: rel.characterB,
-          trust: typeof rel.trust === 'number' ? rel.trust : 50,
-          hostility: typeof rel.hostility === 'number' ? rel.hostility : 10,
-          stage: rel.stage || 'Quen biết',
-          debt: rel.notes,
-          lastMajorChangeChapter: endChapter
-        });
-      }
-    }
-  }
-
-  // 3. Cập nhật manh mối (Clues)
-  const clues: StoryClue[] = [...(previousState.clues || [])];
-  if (Array.isArray(delta?.clues)) {
-    for (const c of delta.clues) {
-      if (c.clue) {
-        clues.push({
-          id: `clue_${Date.now()}_${clues.length + 1}`,
-          clue: c.clue,
-          discoveredChapter: startChapter,
-          discoveredBy: c.discoveredBy || 'Nhân vật chính',
-          knownInterpretations: Array.isArray(c.interpretations) ? c.interpretations : [],
-          actualTruthHidden: c.actualTruthHidden || '',
-          resolved: false
-        });
-      }
-    }
-  }
-
-  // 4. Cập nhật hạt giống dài hạn (Long Term Seeds)
-  const longTermSeeds: LongTermSeed[] = [...(previousState.longTermSeeds || [])];
-  if (Array.isArray(delta?.seeds)) {
-    for (const s of delta.seeds) {
-      if (s.meaningHidden) {
-        longTermSeeds.push({
-          id: `seed_${Date.now()}_${longTermSeeds.length + 1}`,
-          plantedChapter: startChapter,
-          meaningHidden: s.meaningHidden,
-          eligibleCallbackFromChapter: typeof s.eligibleCallbackFromChapter === 'number' ? s.eligibleCallbackFromChapter : startChapter + 30,
-          status: 'planted'
-        });
-      }
-    }
-  }
-
-  // 5. Cập nhật unresolved threads
-  let unresolvedThreads = [...(previousState.unresolvedThreads || [])];
-  if (Array.isArray(delta?.resolvedThreads)) {
-    const resolvedSet = new Set(delta.resolvedThreads.map((t: string) => t.toLowerCase().trim()));
-    unresolvedThreads = unresolvedThreads.filter(t => !resolvedSet.has(t.toLowerCase().trim()));
-  }
-  if (Array.isArray(delta?.unresolvedThreads)) {
-    for (const t of delta.unresolvedThreads) {
-      if (typeof t === 'string' && t.trim() && !unresolvedThreads.includes(t.trim())) {
-        unresolvedThreads.push(t.trim());
-      }
-    }
-  }
-
-  // 6. Trích xuất nhân vật mới và khử trùng lặp theo tên chuẩn hóa
-  const existingNames = new Set(existingCharacters.map(c => c.name.toLowerCase().trim()));
-  const newCharacters: Character[] = [];
-
-  if (Array.isArray(delta?.newCharacters)) {
-    for (const nc of delta.newCharacters) {
-      const norm = (nc.name || '').toLowerCase().trim();
-      if (norm && !existingNames.has(norm)) {
-        existingNames.add(norm);
-        newCharacters.push({
-          id: `char_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-          name: nc.name.trim(),
-          gender: nc.gender || 'Chưa rõ',
-          age: nc.age || 'Chưa rõ',
-          role: nc.role || 'Nhân vật phụ',
-          appearance: nc.appearance || '',
-          personality: nc.personality || ''
-        });
-      }
-    }
-  }
-
-  // 7. Mở khóa nhân vật theo chương và Arc (Unlocked Characters)
-  const unlockedCharacterIds = new Set<string>(previousState.unlockedCharacterIds || []);
-  (control.characterGates || []).forEach(gate => {
-    if (gate.unlockAtChapter <= endChapter) {
-      unlockedCharacterIds.add(gate.characterId);
-    }
-  });
-  // Thêm các nhân vật thuộc Arc hiện tại
-  (currentArc.unlockedCharacterIds || []).forEach(id => unlockedCharacterIds.add(id));
-
-  // 8. Cập nhật World Fact States
-  const worldFactStates = { ...(previousState.worldFactStates || {}) };
-  (control.worldFacts || []).forEach(wf => {
-    if (wf.introducedAtChapter <= endChapter) {
-      if (!worldFactStates[wf.id] || worldFactStates[wf.id] === 'hidden') {
-        worldFactStates[wf.id] = 'revealed';
-      }
-    } else {
-      if (!worldFactStates[wf.id]) {
-        worldFactStates[wf.id] = 'hidden';
-      }
-    }
-  });
-
-  // 9. Tạo ChapterMemory index
-  const newMemories: ChapterMemory[] = [];
-  for (let i = 0; i < acceptedChapters.length; i++) {
-    const chNum = startChapter + i;
-    const ch = acceptedChapters[i];
-    const aiMem = Array.isArray(delta?.chapterSummaries) ? delta.chapterSummaries.find((s: any) => s.chapterNumber === chNum) : null;
-
-    newMemories.push({
-      chapterNumber: chNum,
-      title: ch.title,
-      summary: aiMem?.summary || ch.content.slice(0, 300) + '...',
-      charactersInvolved: aiMem?.charactersInvolved || [],
-      locations: aiMem?.locations || [],
-      clues: aiMem?.clues || [],
-      relationshipChanges: aiMem?.relationshipChanges || [],
-      injuries: aiMem?.injuries || [],
-      resources: aiMem?.resources || [],
-      longTermSeeds: aiMem?.longTermSeeds || []
+    nextCharacterStates[key].injuries.push({
+      type: injury.type,
+      bodyPart: injury.bodyPart,
+      severity: injury.severity,
+      receivedChapter: startChapter,
+      expectedRecoveryChapter: startChapter + injury.durationChapters,
+      restrictions: injury.restrictions.length ? injury.restrictions : ['Hạn chế vận động mạnh']
     });
   }
 
-  // 10. Cập nhật continuitySummary (kế thừa và nối tiếp)
-  const batchSummaryText = delta?.batchSummary || rawSummary || acceptedChapters.map(c => c.title).join('; ');
-  const updatedContinuitySummary = previousState.currentChapter === 0
-    ? `Tiến trình khởi đầu (Chương 1-${endChapter}): ${batchSummaryText}`
-    : `(Đến chương ${endChapter}): ${batchSummaryText}`;
+  const relationshipsMap = new Map<string, StoryRelationship>();
+  for (const relationship of normalizeExistingRelationships(previousState.relationships)) {
+    relationshipsMap.set(pairKey(relationship.characterA, relationship.characterB), relationship);
+  }
+  for (const relationship of delta.relationships) {
+    relationshipsMap.set(pairKey(relationship.characterA, relationship.characterB), {
+      characterA: relationship.characterA,
+      characterB: relationship.characterB,
+      trust: relationship.trust ?? 50,
+      hostility: relationship.hostility ?? 10,
+      stage: relationship.stage || 'Quen biết',
+      debt: relationship.notes,
+      lastMajorChangeChapter: endChapter
+    });
+  }
 
+  const clues = normalizeExistingClues(previousState.clues);
+  for (const clue of delta.clues) {
+    clues.push({
+      id: `clue_${startChapter}_${clues.length + 1}`,
+      clue: clue.clue,
+      discoveredChapter: startChapter,
+      discoveredBy: clue.discoveredBy || 'Nhân vật chính',
+      knownInterpretations: clue.interpretations,
+      actualTruthHidden: clue.actualTruthHidden || '',
+      resolved: false
+    });
+  }
+
+  const longTermSeeds = normalizeExistingSeeds(previousState.longTermSeeds);
+  for (const seed of delta.seeds) {
+    longTermSeeds.push({
+      id: `seed_${startChapter}_${longTermSeeds.length + 1}`,
+      plantedChapter: startChapter,
+      meaningHidden: seed.meaningHidden,
+      eligibleCallbackFromChapter: seed.eligibleCallbackFromChapter || startChapter + 30,
+      status: 'planted'
+    });
+  }
+
+  const resolvedSet = new Set(delta.resolvedThreads.map(thread => thread.toLocaleLowerCase('vi-VN')));
+  const unresolvedThreads = normalizeStringArray(previousState.unresolvedThreads)
+    .filter(thread => !resolvedSet.has(thread.toLocaleLowerCase('vi-VN')));
+  for (const thread of delta.unresolvedThreads) {
+    if (!unresolvedThreads.includes(thread)) unresolvedThreads.push(thread);
+  }
+
+  const existingNames = new Set<string>();
+  for (const character of Array.isArray(existingCharacters) ? existingCharacters : []) {
+    const name = normalizeText(character?.name);
+    if (name) existingNames.add(name.toLocaleLowerCase('vi-VN'));
+  }
+  const newCharacters: Character[] = [];
+  for (const character of delta.newCharacters) {
+    const normalizedName = character.name.toLocaleLowerCase('vi-VN');
+    if (existingNames.has(normalizedName)) continue;
+    existingNames.add(normalizedName);
+    newCharacters.push({
+      id: `char_${startChapter}_${newCharacters.length + 1}`,
+      name: character.name,
+      gender: character.gender || 'Chưa rõ',
+      age: character.age || 'Chưa rõ',
+      role: character.role || 'Nhân vật phụ',
+      appearance: character.appearance || '',
+      personality: character.personality || ''
+    });
+  }
+
+  const unlockedCharacterIds = new Set(normalizeStringArray(previousState.unlockedCharacterIds));
+  for (const gate of control.characterGates || []) {
+    if (gate.unlockAtChapter <= endChapter) unlockedCharacterIds.add(gate.characterId);
+  }
+  for (const id of currentArc.unlockedCharacterIds || []) unlockedCharacterIds.add(id);
+
+  const worldFactStates: StoryState['worldFactStates'] = {};
+  if (isRecord(previousState.worldFactStates)) {
+    for (const [factId, status] of Object.entries(previousState.worldFactStates)) {
+      if (status === 'hidden' || status === 'foreshadowed' || status === 'revealed') worldFactStates[factId] = status;
+    }
+  }
+  for (const fact of control.worldFacts || []) {
+    if (fact.introducedAtChapter <= endChapter) {
+      if (!worldFactStates[fact.id] || worldFactStates[fact.id] === 'hidden') worldFactStates[fact.id] = 'revealed';
+    } else if (!worldFactStates[fact.id]) {
+      worldFactStates[fact.id] = 'hidden';
+    }
+  }
+
+  const newMemories: ChapterMemory[] = acceptedChapters.map((chapter, index) => {
+    const chapterNumber = startChapter + index;
+    const aiMemory = delta.chapterSummaries.find(summary => summary.chapterNumber === chapterNumber);
+    return {
+      chapterNumber,
+      title: normalizeText(chapter.title) || `Chương ${chapterNumber}`,
+      summary: aiMemory?.summary || `${chapter.content.slice(0, 300)}...`,
+      charactersInvolved: aiMemory?.charactersInvolved || [],
+      locations: aiMemory?.locations || [],
+      clues: aiMemory?.clues || [],
+      relationshipChanges: aiMemory?.relationshipChanges || [],
+      injuries: aiMemory?.injuries || [],
+      resources: aiMemory?.resources || [],
+      longTermSeeds: aiMemory?.longTermSeeds || []
+    };
+  });
+
+  const batchSummary = delta.batchSummary || normalizeText(rawSummary)
+    || acceptedChapters.map(chapter => normalizeText(chapter.title)).filter((title): title is string => title !== null).join('; ');
+  const updatedContinuitySummary = previousState.currentChapter === 0
+    ? `Tiến trình khởi đầu (Chương 1-${endChapter}): ${batchSummary}`
+    : `(Đến chương ${endChapter}): ${batchSummary}`;
+
+  const previousResources = isRecord(previousState.resources) ? previousState.resources : {};
+  const resources: StoryState['resources'] = {};
+  for (const [key, value] of Object.entries(previousResources)) {
+    const text = normalizeText(value);
+    if (text) resources[key] = text;
+    else if (Array.isArray(value)) resources[key] = normalizeStringArray(value);
+  }
+  if (delta.resources.money) resources.money = delta.resources.money;
+  if (delta.resources.businesses?.length) resources.businesses = delta.resources.businesses;
+  if (delta.resources.properties?.length) resources.properties = delta.resources.properties;
+  if (delta.resources.equipment?.length) resources.equipment = delta.resources.equipment;
+  const recentConsequences = [
+    ...normalizeStringArray(previousState.recentConsequences),
+    ...delta.injuries.map(injury => `${injury.characterName} bị thương ở ${injury.bodyPart}`)
+  ].slice(-20);
   const nextState: StoryState = {
     currentChapter: endChapter,
     characterStates: nextCharacterStates,
     relationships: Array.from(relationshipsMap.values()),
-    resources: {
-      money: delta?.resources?.money || previousState.resources?.money,
-      businesses: delta?.resources?.businesses || previousState.resources?.businesses,
-      properties: delta?.resources?.properties || previousState.resources?.properties,
-      equipment: delta?.resources?.equipment || previousState.resources?.equipment
-    },
+    resources,
     clues,
     unresolvedThreads: unresolvedThreads.slice(-15),
     longTermSeeds,
-    recentConsequences: (delta?.injuries || []).map((inj: any) => `${inj.characterName} bị thương ở ${inj.bodyPart}`),
+    recentConsequences,
     currentArcId: currentArc.id,
     currentArcProgress: arcProgress,
     unlockedCharacterIds: Array.from(unlockedCharacterIds),
-    worldFactStates
+    worldFactStates,
+    activeFactions: normalizeStringArray(previousState.activeFactions)
   };
 
-  return {
-    nextState,
-    newCharacters,
-    updatedContinuitySummary,
-    newMemories
-  };
+  return { nextState, newCharacters, updatedContinuitySummary, newMemories };
 }

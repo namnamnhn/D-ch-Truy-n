@@ -1,5 +1,5 @@
 import { Character, CreativeChapter } from '../../types';
-import { StoryBible, StoryControl, StoryState, BatchPlan, ValidationResult, ChapterMemory, PipelineProgressInfo, PipelineStage } from './types';
+import { StoryBible, StoryControl, StoryState, BatchPlan, ValidationResult, ChapterMemory, PipelineProgressInfo, PipelineStage, STORY_CONTROL_SCHEMA_VERSION } from './types';
 import { compileStoryControl, computeBibleHash, createInitialStoryState } from './compiler';
 import { generateBatchPlan } from './planner';
 import { generateChaptersProse } from './writer';
@@ -33,6 +33,15 @@ export interface PipelineResult {
   batchPlan: BatchPlan;
   repairCount: number;
   errorMessage?: string;
+}
+
+export function canReuseStoryControl(control: StoryControl | undefined, expectedHash: string): control is StoryControl {
+  return Boolean(
+    control
+    && control.schemaVersion === STORY_CONTROL_SCHEMA_VERSION
+    && control.sourceHash === expectedHash
+    && control.arcs?.length > 0
+  );
 }
 
 /**
@@ -76,7 +85,7 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
   reportProgress('compiler', 'Kiểm tra & Biên dịch Story Control...', 10);
   let control: StoryControl;
 
-  if (existingControl && existingControl.sourceHash === hash && existingControl.arcs?.length > 0) {
+  if (canReuseStoryControl(existingControl, hash)) {
     onLog('[Pipeline] Tái sử dụng StoryControl đã biên dịch (Hash khớp).');
     control = existingControl;
   } else {

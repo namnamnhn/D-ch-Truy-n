@@ -5,10 +5,7 @@ import { IS_LITE } from '../../constants';
 import {
     runStoryEnginePipeline,
     compileStoryControl,
-    parseBlueprintV3,
     StoryBible,
-    StoryControl,
-    StoryState,
     PipelineProgressInfo
 } from '../../services/storyEngine';
 
@@ -17,140 +14,9 @@ export type EngineProgressInfo = PipelineProgressInfo;
 // Giữ tối đa 20 snapshot gần nhất (mỗi lượt "Viết Tiếp" chụp 1 bản trước khi áp dụng chương mới)
 const CREATIVE_SNAPSHOT_LIMIT = 20;
 import { parseEpub, downloadTextFile } from '../../utils/fileHelpers';
+import { applySetupImport, parseSetupFileContent } from '../../services/storyEngine/setupImport';
 
-interface ParsedSetupFile {
-    seedTitle: string; genre: string; premise: string; worldNotes: string; charNotes: string; outline: string;
-    characters: Character[];
-    seriesPremise?: string;
-    continuitySummary?: string;
-    storyControl?: StoryControl;
-    storyState?: StoryState;
-    memoryIndex?: any[];
-}
-
-const parseCharacterBlock = (block: string): Character | null => {
-    const lines = block.split('\n');
-    const header = (lines[0] || '').trim();
-    const m = header.match(/^-\s*([^(,]+?)\s*(?:\(([^)]*)\))?\s*(?:,\s*(.+))?$/);
-    if (!m || !m[1]?.trim()) return null;
-    const name = m[1].trim();
-    const role = (m[2] || '').trim();
-    let gender = '';
-    let age = '';
-    if (m[3]) {
-        for (const part of m[3].split(',').map(s => s.trim()).filter(Boolean)) {
-            const ageMatch = part.match(/^(\d+)\s*tuổi$/);
-            if (ageMatch) age = ageMatch[1];
-            else if (!gender) gender = part;
-        }
-    }
-    let appearance = '';
-    let personality = '';
-    for (const line of lines.slice(1)) {
-        const t = line.trim();
-        if (t.startsWith('Ngoại hình:')) appearance = t.replace('Ngoại hình:', '').trim();
-        else if (t.startsWith('Tính cách:')) personality = t.replace('Tính cách:', '').trim();
-    }
-    return {
-        id: 'char_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
-        name, role, gender, age,
-        appearance: appearance === '(chưa có)' ? '' : appearance,
-        personality: personality === '(chưa có)' ? '' : personality,
-    };
-};
-
-const PLACEHOLDER_VALUES = new Set(['(Chưa chọn)', '(Chưa có)', '(Chưa có nhân vật nào)', '(Chưa đặt tên)']);
-
-export const parseSetupFile = (text: string): ParsedSetupFile | null => {
-    if (!text || !text.trim()) return null;
-
-    // 1. Hỗ trợ import trực tiếp file JSON V3
-    if (text.trim().startsWith('{') && text.trim().endsWith('}')) {
-        try {
-            const parsedJson = JSON.parse(text.trim());
-            const blueprint = parseBlueprintV3(text);
-            return {
-                seedTitle: parsedJson.seedTitle || parsedJson.title || '',
-                genre: parsedJson.genre || 'Tiên Hiệp',
-                premise: parsedJson.premise || parsedJson.seriesPremise || '',
-                worldNotes: parsedJson.worldNotes || '',
-                charNotes: parsedJson.charNotes || '',
-                outline: parsedJson.outline || '',
-                characters: Array.isArray(parsedJson.characters) ? parsedJson.characters : [],
-                seriesPremise: parsedJson.seriesPremise || parsedJson.premise || '',
-                continuitySummary: parsedJson.continuitySummary || parsedJson.premise || '',
-                storyControl: blueprint || parsedJson.storyControl,
-                storyState: parsedJson.storyState,
-                memoryIndex: parsedJson.memoryIndex
-            };
-        } catch {
-            // tiếp tục với định dạng text setup
-        }
-    }
-
-    if (!text.includes('[')) return null;
-
-    const titleMatch = text.match(/^THIẾT LẬP SÁNG TÁC:\s*(.*)$/m);
-    const seedTitle = titleMatch && !PLACEHOLDER_VALUES.has(titleMatch[1].trim()) ? titleMatch[1].trim() : '';
-
-    const getSection = (label: string): string => {
-        const re = new RegExp(`\\[${label}\\]\\n([\\s\\S]*?)(?=\\n\\[[^\\]]+\\]|$)`);
-        const m = text.match(re);
-        if (!m) return '';
-        const val = m[1].trim();
-        return PLACEHOLDER_VALUES.has(val) ? '' : val;
-    };
-
-    const genre = getSection('THỂ LOẠI');
-    const premise = getSection('TIỀN ĐỀ / TÓM TẮT');
-    const worldNotes = getSection('THẾ GIỚI');
-    const charSection = getSection('NHÂN VẬT');
-    const charNotes = getSection('GHI CHÚ NHÂN VẬT KHÁC');
-    const outline = getSection('DÀN Ý');
-
-    if (!seedTitle && !genre && !premise && !worldNotes && !charSection && !charNotes && !outline) return null;
-
-    const characters = charSection
-        ? charSection.split(/\n\n+/).map(b => b.trim()).filter(Boolean).map(parseCharacterBlock).filter((c): c is Character => !!c)
-        : [];
-
-    let storyControl: StoryControl | undefined;
-    let storyState: StoryState | undefined;
-    let seriesPremise = premise;
-    let continuitySummary = premise;
-    let memoryIndex: any[] | undefined;
-
-    // Hỗ trợ [STORY_ENGINE_SETTINGS_V3] hoặc [BLUEPRINT_V3]
-    const metaV3 = getSection('STORY_ENGINE_SETTINGS_V3') || getSection('BLUEPRINT_V3');
-    if (metaV3) {
-        try {
-            const parsedMeta = JSON.parse(metaV3.replace(/```json/g, '').replace(/```/g, '').trim());
-            storyControl = parsedMeta.storyControl || parseBlueprintV3(metaV3);
-            storyState = parsedMeta.storyState;
-            if (parsedMeta.seriesPremise) seriesPremise = parsedMeta.seriesPremise;
-            if (parsedMeta.continuitySummary) continuitySummary = parsedMeta.continuitySummary;
-            if (parsedMeta.memoryIndex) memoryIndex = parsedMeta.memoryIndex;
-        } catch {
-            // fallback
-        }
-    } else {
-        const metaV2 = getSection('STORY_ENGINE_META_V2');
-        if (metaV2) {
-            try {
-                const parsedMeta = JSON.parse(metaV2);
-                storyControl = parsedMeta.storyControl;
-                storyState = parsedMeta.storyState;
-                if (parsedMeta.seriesPremise) seriesPremise = parsedMeta.seriesPremise;
-                if (parsedMeta.continuitySummary) continuitySummary = parsedMeta.continuitySummary;
-                if (parsedMeta.memoryIndex) memoryIndex = parsedMeta.memoryIndex;
-            } catch {
-                // fallback gracefully
-            }
-        }
-    }
-
-    return { seedTitle, genre, premise, worldNotes, charNotes, outline, characters, seriesPremise, continuitySummary, storyControl, storyState, memoryIndex };
-};
+export const parseSetupFile = parseSetupFileContent;
 
 export interface UseCreativePageProps {
     addToast: (msg: string, type?: 'success' | 'error' | 'info' | 'warning') => void;
@@ -409,7 +275,9 @@ ${textContent}`,
                 charNotes: charNotes || '',
                 outline: outline || '',
                 characters: state.characters || [],
-                totalPlannedChapters: state.totalTargetChapters || 600
+                totalPlannedChapters: state.totalTargetChapters || 600,
+                storyEngineSettingsV3: state.storyEngineSettingsV3,
+                blueprintV3: state.blueprintV3
             };
 
             const compiled = await compileStoryControl(bible, async (prompt) => {
@@ -463,7 +331,9 @@ ${textContent}`,
                 charNotes: charNotes || '',
                 outline: outline || '',
                 characters: state.characters || [],
-                totalPlannedChapters: state.totalTargetChapters || 600
+                totalPlannedChapters: state.totalTargetChapters || 600,
+                storyEngineSettingsV3: state.storyEngineSettingsV3,
+                blueprintV3: state.blueprintV3
             };
 
             // Chụp snapshot trạng thái trước khi thực thi
@@ -614,10 +484,12 @@ ${textContent}`,
             version: 'v3',
             seriesPremise: state.seriesPremise || premise,
             continuitySummary: state.continuitySummary || premise,
-            storyControl: state.storyControl,
-            storyState: state.storyState,
-            memoryIndex: state.memoryIndex
+            ...(state.storyEngineSettingsV3 || {})
         }, null, 2);
+
+        const blueprintV3 = state.blueprintV3
+            ? JSON.stringify(state.blueprintV3.source, null, 2)
+            : '';
 
         const content = [
             `THIẾT LẬP SÁNG TÁC: ${seedTitle || storyInfo?.title || '(Chưa đặt tên)'}`,
@@ -636,7 +508,8 @@ ${textContent}`,
             '',
             `[DÀN Ý]\n${outline || '(Chưa có)'}`,
             '',
-            `[STORY_ENGINE_SETTINGS_V3]\n${engineSettingsV3}`
+            `[STORY_ENGINE_SETTINGS_V3]\n${engineSettingsV3}`,
+            blueprintV3 ? `\n[STORY_ENGINE_BLUEPRINT_V3]\n${blueprintV3}` : ''
         ].join('\n');
         const safeTitle = (seedTitle || storyInfo?.title || 'ThietLap').replace(/[\\/:*?"<>|]/g, '').trim() || 'ThietLap';
         downloadTextFile(`ThietLapSangTac_${safeTitle}.txt`, content);
@@ -667,27 +540,13 @@ ${textContent}`,
                     addToast('Không đọc được nội dung file thiết lập.', 'error');
                     return;
                 }
-                const hasExisting = !!(seedTitle || premise || worldNotes || charNotes || outline || (state.characters && state.characters.length > 0));
+                const hasExisting = !!(seedTitle || premise || worldNotes || charNotes || outline
+                    || (state.characters && state.characters.length > 0)
+                    || (state.chapters && state.chapters.length > 0));
                 if (hasExisting && !confirm('Đã có dữ liệu thiết lập hiện tại. Nhập file mới sẽ GHI ĐÈ toàn bộ. Bạn có chắc muốn tiếp tục?')) {
                     return;
                 }
-                setSetup({
-                    seedTitle: parsed.seedTitle,
-                    genre: parsed.genre || genre,
-                    premise: parsed.premise,
-                    worldNotes: parsed.worldNotes,
-                    charNotes: parsed.charNotes,
-                    outline: parsed.outline,
-                });
-                setState(prev => ({
-                    ...prev,
-                    characters: parsed.characters,
-                    seriesPremise: parsed.seriesPremise || parsed.premise,
-                    continuitySummary: parsed.continuitySummary || parsed.premise,
-                    storyControl: parsed.storyControl || prev.storyControl,
-                    storyState: parsed.storyState || prev.storyState,
-                    memoryIndex: parsed.memoryIndex || prev.memoryIndex
-                }));
+                setState(prev => applySetupImport(prev, parsed));
                 addToast(`Đã nhập thiết lập thành công (${parsed.characters.length} nhân vật).`, 'success');
             } catch (err: any) {
                 addToast(`Lỗi đọc file thiết lập: ${err.message || 'không xác định'}`, 'error');

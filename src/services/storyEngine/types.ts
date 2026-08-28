@@ -1,5 +1,13 @@
 import { Character } from '../../types';
 
+export const STORY_CONTROL_SCHEMA_VERSION = 3;
+
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
+export interface JsonObject {
+  [key: string]: JsonValue;
+}
+
 export type PipelineStage = 'compiler' | 'planning' | 'writing' | 'validating' | 'repairing' | 'extracting' | 'completed' | 'failed';
 
 export interface PipelineProgressInfo {
@@ -24,6 +32,8 @@ export interface StoryBible {
   outline: string;
   characters: Character[];
   totalPlannedChapters?: number;
+  storyEngineSettingsV3?: JsonObject;
+  blueprintV3?: AuthoritativeBlueprintV3;
 }
 
 // ----------------------------------------------------
@@ -42,6 +52,7 @@ export interface ArcDefinition {
   keyMilestones: string[];
   worldBuildingFocus: string;
   forbiddenSpoilers: string[];
+  source?: JsonObject;
 }
 
 export interface CharacterUnlockCondition {
@@ -64,22 +75,50 @@ export interface CharacterRegistryEntry {
   unlockCondition: CharacterUnlockCondition;
   allowedArcs: string[];
   deathOrExitChapter?: number;
+  aliases?: string[];
+  relationships?: JsonValue;
+  restrictions?: JsonValue;
+  unlockChapter?: number;
+  directAppearanceChapter?: number;
+  povUnlockChapter?: number;
+  majorFocusNotBeforeChapter?: number;
+  source?: JsonObject;
 }
 
 export interface WorldFact {
   id: string;
-  category: 'magic_system' | 'geography' | 'faction' | 'history' | 'secret_rule';
+  category: 'magic_system' | 'geography' | 'faction' | 'history' | 'secret_rule' | string;
   fact: string;
   scope: 'public' | 'restricted' | 'hidden_truth';
+  visibility?: 'always' | 'gated' | 'author_only';
   introducedAtChapter: number;
+  unlockChapter?: number;
+  revealChapter?: number;
   gateCondition?: string;
   secretTruth?: string;
+  source?: JsonObject;
 }
 
 export interface NarrativeExposureRules {
   prohibitedTopicsUntilChapter: { topic: string; unlockChapter: number }[];
   foreshadowingDirectives: { hint: string; plantArcId: string; payoffArcId: string }[];
   mandatoryKnowledgeByChapter: { chapter: number; requiredFactIds: string[] }[];
+}
+
+export interface AuthoritativeBlueprintV3 {
+  schemaVersion?: JsonPrimitive;
+  totalChapters?: number;
+  settings?: JsonObject;
+  characterRegistry: CharacterRegistryEntry[];
+  worldFacts: WorldFact[];
+  arcs: ArcDefinition[];
+  narrativeExposureRules: JsonObject[] | NarrativeExposureRules;
+  mysteryThreads: JsonValue[];
+  characterGates: CharacterGate[];
+  spoilerGates: SpoilerGate[];
+  originality?: JsonValue;
+  authorOnlySecrets: JsonValue[];
+  source: JsonObject;
 }
 
 export interface CharacterGate {
@@ -115,16 +154,22 @@ export interface PacingRules {
 
 export interface StoryControl {
   version: 'v3' | 'v2';
+  schemaVersion: typeof STORY_CONTROL_SCHEMA_VERSION;
   sourceHash: string;
   totalChapters: number;
   arcs: ArcDefinition[];
   characterRegistry: Record<string, CharacterRegistryEntry>;
   worldFacts: WorldFact[];
-  narrativeExposureRules: NarrativeExposureRules;
+  narrativeExposureRules: JsonObject[] | NarrativeExposureRules;
   characterGates: CharacterGate[];
   spoilerGates: SpoilerGate[];
   continuityRules: ContinuityRules;
   pacingRules: PacingRules;
+  settings?: JsonObject;
+  mysteryThreads: JsonValue[];
+  originality?: JsonValue;
+  authorOnlySecrets: JsonValue[];
+  authoritativeBlueprint?: AuthoritativeBlueprintV3;
 }
 
 // ----------------------------------------------------
