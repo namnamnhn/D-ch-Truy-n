@@ -9,7 +9,8 @@ import {
   StoryRelationship,
   StoryState
 } from './types';
-import { getCurrentArc, calculateArcProgress } from './arcController';
+import { calculateArcProgress } from './arcController';
+import { getArcForChapter, getCharacterAccess, isWorldFactAvailable } from './storyAccess';
 import {
   isRecord,
   normalizeFiniteNumber,
@@ -441,8 +442,8 @@ export async function extractAndMergeState(
   updatedContinuitySummary: string;
   newMemories: ChapterMemory[];
 }> {
-  const currentArc = getCurrentArc(control, startChapter);
   const endChapter = startChapter + acceptedChapters.length - 1;
+  const currentArc = getArcForChapter(control, endChapter);
   const { arcProgress } = calculateArcProgress(currentArc, endChapter);
   let parseResult: StateDeltaParseResult = { delta: emptyStateDelta(), warnings: [], usedFallback: true };
 
@@ -559,7 +560,9 @@ export async function extractAndMergeState(
   for (const gate of control.characterGates || []) {
     if (gate.unlockAtChapter <= endChapter) unlockedCharacterIds.add(gate.characterId);
   }
-  for (const id of currentArc.unlockedCharacterIds || []) unlockedCharacterIds.add(id);
+  for (const character of Object.values(control.characterRegistry || {})) {
+    if (getCharacterAccess(control, character, endChapter).canMention) unlockedCharacterIds.add(character.id);
+  }
 
   const worldFactStates: StoryState['worldFactStates'] = {};
   if (isRecord(previousState.worldFactStates)) {
@@ -568,7 +571,7 @@ export async function extractAndMergeState(
     }
   }
   for (const fact of control.worldFacts || []) {
-    if (fact.introducedAtChapter <= endChapter) {
+    if (isWorldFactAvailable(fact, endChapter)) {
       if (!worldFactStates[fact.id] || worldFactStates[fact.id] === 'hidden') worldFactStates[fact.id] = 'revealed';
     } else if (!worldFactStates[fact.id]) {
       worldFactStates[fact.id] = 'hidden';

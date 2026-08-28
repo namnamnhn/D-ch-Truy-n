@@ -3,6 +3,7 @@ import { StoryBible, StoryControl, StoryState, ArcDefinition, CharacterGate, Spo
 import { getCurrentArc, calculateArcProgress } from './arcController';
 import { createStoryControlFromBlueprint, parseBlueprintContent, validateBlueprintV3Object } from './blueprintParser';
 import { isRecord } from './runtimeValidation';
+import { getCharacterAccess, isWorldFactAvailable } from './storyAccess';
 
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -223,6 +224,7 @@ export function createDeterministicStoryControl(bible: StoryBible, sourceHash: s
       personality: c.personality || '',
       coreMotivation: idx === 0 ? 'Vươn lên đỉnh cao và khám phá thế giới' : 'Đồng hành hoặc thử thách nhân vật chính',
       forbiddenSpoilers: [`Bí mật tương lai về ${c.name}`],
+      restrictions: [],
       unlockCondition: { type: 'arc', value: unlockArcId },
       allowedArcs: Array.from({ length: totalArcsCount - unlockArcIndex }, (_, i) => `arc_${unlockArcIndex + 1 + i}`)
     };
@@ -314,6 +316,7 @@ export function createDeterministicStoryControl(bible: StoryBible, sourceHash: s
       category: 'magic_system',
       fact: bible.worldNotes || 'Hệ thống tu luyện theo từng cảnh giới nghiêm ngặt.',
       scope: 'public',
+      visibility: 'always',
       introducedAtChapter: 1
     },
     {
@@ -321,6 +324,7 @@ export function createDeterministicStoryControl(bible: StoryBible, sourceHash: s
       category: 'geography',
       fact: 'Bối cảnh thế giới phân tầng từ hạ giới lên thượng giới.',
       scope: 'public',
+      visibility: 'always',
       introducedAtChapter: 1
     }
   ];
@@ -377,18 +381,22 @@ export function createInitialStoryState(
 
   // Xác định danh sách nhân vật mở khóa theo gates
   const unlockedCharacterIds = new Set<string>();
-  (control.characterGates || []).forEach(gate => {
-    if (gate.unlockAtChapter <= Math.max(1, currentChapter)) {
-      unlockedCharacterIds.add(gate.characterId);
+  Object.values(control.characterRegistry || {}).forEach(character => {
+    if (getCharacterAccess(control, character, Math.max(1, currentChapter)).canMention) {
+      unlockedCharacterIds.add(character.id);
     }
   });
-  (currentArc.unlockedCharacterIds || []).forEach(id => unlockedCharacterIds.add(id));
-  initialCharacters.forEach(c => unlockedCharacterIds.add(c.id));
+  initialCharacters.forEach(character => {
+    if (!control.characterRegistry?.[character.id]
+      && !(control.characterGates || []).some(gate => gate.characterId === character.id && gate.unlockAtChapter > Math.max(1, currentChapter))) {
+      unlockedCharacterIds.add(character.id);
+    }
+  });
 
   // Trạng thái World Facts ban đầu
   const worldFactStates: Record<string, 'hidden' | 'foreshadowed' | 'revealed'> = {};
   (control.worldFacts || []).forEach(wf => {
-    if (wf.introducedAtChapter <= Math.max(1, currentChapter)) {
+    if (isWorldFactAvailable(wf, Math.max(1, currentChapter))) {
       worldFactStates[wf.id] = 'revealed';
     } else {
       worldFactStates[wf.id] = 'hidden';

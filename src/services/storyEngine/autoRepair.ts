@@ -1,6 +1,6 @@
 import { CreativeChapter } from '../../types';
 import { BatchPlan, Violation } from './types';
-import { parseChaptersAndMetadata } from './writer';
+import { validateWriterOutput } from './writer';
 
 /**
  * Auto Repair Engine:
@@ -46,7 +46,7 @@ ${rejectedChapters.map(c => `=== ${c.title} ===\n${c.content}`).join('\n\n')}
 HÃY VIẾT LẠI TOÀN BỘ CÁC CHƯƠNG ĐÃ ĐƯỢC SỬA HOÀN TOÀN HỢP LỆ VÀ ĐẦY ĐỦ VĂN PHONG:`;
 
   const rawOutput = await runner(prompt, sys);
-  const parsed = parseChaptersAndMetadata(rawOutput);
+  const parsed = validateWriterOutput(rawOutput, batchPlan.chapters.map(chapter => chapter.chapterNumber));
 
   return {
     chapters: parsed.chapters,

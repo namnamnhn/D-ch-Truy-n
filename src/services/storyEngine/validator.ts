@@ -1,7 +1,9 @@
 import { CreativeChapter } from '../../types';
 import { StoryBible, StoryControl, StoryState, BatchPlan, ValidationResult, Violation, ViolationType } from './types';
 import { lintChapterProse } from './styleLinter';
-import { getCurrentArc, calculateArcProgress, filterCharactersForChapter, filterSpoilersForChapter } from './arcController';
+import { filterCharactersForChapter, filterSpoilersForChapter } from './arcController';
+import { buildValidatorContext } from './contextBuilder';
+import { getCharacterAccess } from './storyAccess';
 
 /**
  * Semantic Validator V3 (Fail-Closed):
@@ -19,7 +21,6 @@ export async function validateBatchOutput(
 ): Promise<ValidationResult> {
   const violations: Violation[] = [];
   const startCh = batchPlan.startChapter;
-  const currentArc = getCurrentArc(control, startCh);
 
   const semanticChecks = {
     characterGating: true,
@@ -42,27 +43,22 @@ export async function validateBatchOutput(
     });
   }
 
-  // 2. DETERMINISTIC CHARACTER GATING & SPOILER GATING CHECKS
-  const { lockedCharacters } = filterCharactersForChapter(
-    bible.characters || [],
-    control.characterGates || [],
-    startCh,
-    control
-  );
-
-  const { forbiddenSpoilers } = filterSpoilersForChapter(
-    control.spoilerGates || [],
-    startCh
-  );
-
   for (let i = 0; i < chapters.length; i++) {
     const ch = chapters[i];
-    const chNum = startCh + i;
+    const chNum = ch.chapterNumber || startCh + i;
     const content = ch.content || '';
+    const { lockedCharacters } = filterCharactersForChapter(
+      bible.characters || [], control.characterGates || [], chNum, control
+    );
+    const lockedNames = new Map(lockedCharacters.map(character => [character.characterName, character.unlockAtChapter]));
+    for (const character of Object.values(control.characterRegistry || {})) {
+      const access = getCharacterAccess(control, character, chNum);
+      if (!access.canAppearDirectly) lockedNames.set(character.name, access.directAppearanceChapter);
+    }
+    const { forbiddenSpoilers } = filterSpoilersForChapter(control.spoilerGates || [], chNum);
 
     // A. Kiểm tra nhân vật bị khóa xuất hiện
-    for (const locked of lockedCharacters) {
-      const name = locked.characterName;
+    for (const [name, unlockChapter] of lockedNames) {
       if (!name || name.length < 2) continue;
       const regex = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
       if (regex.test(content)) {
@@ -72,7 +68,7 @@ export async function validateBatchOutput(
           severity: 'CRITICAL',
           chapter: chNum,
           quoteOrDescription: `Nhân vật "${name}" xuất hiện trong Chương ${chNum}`,
-          reason: `Nhân vật "${name}" bị khóa cho tới chương ${locked.unlockAtChapter}.`,
+          reason: `Nhân vật "${name}" bị khóa cho tới chương ${unlockChapter}.`,
           repairInstruction: `Xóa sự xuất hiện của "${name}" hoặc thay bằng nhân vật phụ vô danh.`
         });
       }
@@ -122,7 +118,7 @@ export async function validateBatchOutput(
 
   for (let i = 0; i < chapters.length; i++) {
     const ch = chapters[i];
-    const chNum = startCh + i;
+    const chNum = ch.chapterNumber || startCh + i;
     const content = ch.content || '';
 
     for (const { name, inj } of activeInjuries) {
@@ -175,16 +171,7 @@ HÃY TRẢ VỀ STRICT JSON:
   ]
 }`;
 
-    const qaPrompt = `[THÔNG TIN ARC & BATCH]
-Hồi: ${currentArc.title} (Chương ${currentArc.startChapter} - ${currentArc.endChapter})
-Chương đang viết: ${startCh} - ${startCh + chapters.length - 1}
-Nhân vật cấm kỵ: ${lockedCharacters.map(l => l.characterName).join(', ') || 'Không có'}
-Spoiler cấm kỵ: ${forbiddenSpoilers.map(s => s.description).join('; ') || 'Không có'}
-
-[NỘI DUNG CÁC CHƯƠNG VỪA VIẾT]
-${chapters.map((c, i) => `=== CHƯƠNG ${startCh + i}: ${c.title} ===\n${c.content}\n`).join('\n\n')}
-
-Thực hiện kiểm tra Semantic QA:`;
+    const qaPrompt = buildValidatorContext(control, batchPlan, state, startCh, chapters);
 
     try {
       const rawQa = await runner(qaPrompt, qaSys);

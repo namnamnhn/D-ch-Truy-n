@@ -129,7 +129,7 @@ function normalizeCharacterRegistry(value: unknown, arcs: ArcDefinition[]): Char
       allowedArcs: allowedArcs.length ? allowedArcs : arcs.map(arc => arc.id),
       deathOrExitChapter: normalizePositiveInteger(candidate.value.deathOrExitChapter) || undefined,
       relationships: normalizeJsonValue(candidate.value.relationships),
-      restrictions: normalizeJsonValue(candidate.value.restrictions),
+      restrictions: normalizeStringArray(candidate.value.restrictions),
       unlockChapter,
       directAppearanceChapter: normalizePositiveInteger(candidate.value.directAppearanceChapter) || undefined,
       povUnlockChapter: normalizePositiveInteger(candidate.value.povUnlockChapter) || undefined,
@@ -149,8 +149,9 @@ function normalizeWorldFacts(value: unknown): WorldFact[] {
     const fact = normalizeText(entry.fact) || normalizeText(entry.description) || normalizeText(entry.value);
     const source = normalizeJsonObject(entry);
     if (!fact || !source) continue;
-    const visibility = entry.visibility === 'always' || entry.visibility === 'gated' || entry.visibility === 'author_only'
-      ? entry.visibility : undefined;
+    const visibility: WorldFact['visibility'] = entry.visibility === 'always' || entry.visibility === 'gated' || entry.visibility === 'author_only'
+      ? entry.visibility
+      : entry.scope === 'hidden_truth' ? 'author_only' : entry.scope === 'restricted' ? 'gated' : 'always';
     const scope: WorldFact['scope'] = visibility === 'author_only'
       ? 'hidden_truth'
       : visibility === 'gated' ? 'restricted' : (entry.scope === 'restricted' || entry.scope === 'hidden_truth' ? entry.scope : 'public');

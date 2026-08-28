@@ -1,6 +1,7 @@
 export * from './types';
 export * from './compiler';
 export * from './arcController';
+export * from './storyAccess';
 export * from './contextBuilder';
 export * from './planValidator';
 export * from './planner';

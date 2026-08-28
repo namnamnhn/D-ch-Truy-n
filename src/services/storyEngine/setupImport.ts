@@ -131,6 +131,7 @@ function normalizeChapters(value: unknown): CreativeChapter[] | undefined {
       ? entry.status : 'completed';
     return {
       id: normalizeText(entry.id) || `chapter_${index + 1}`,
+      chapterNumber: normalizePositiveInteger(entry.chapterNumber) || undefined,
       title: normalizeText(entry.title) || `Chương ${index + 1}`,
       content: normalizeText(entry.content) || '',
       status,

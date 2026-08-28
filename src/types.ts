@@ -223,6 +223,7 @@ export interface GlobalRepairEntry {
 
 export interface CreativeChapter {
     id: string;
+    chapterNumber?: number;
     title: string;
     content: string;
     status?: 'completed' | 'failed' | 'retrying';

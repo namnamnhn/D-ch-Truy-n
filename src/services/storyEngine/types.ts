@@ -77,7 +77,7 @@ export interface CharacterRegistryEntry {
   deathOrExitChapter?: number;
   aliases?: string[];
   relationships?: JsonValue;
-  restrictions?: JsonValue;
+  restrictions: string[];
   unlockChapter?: number;
   directAppearanceChapter?: number;
   povUnlockChapter?: number;
@@ -90,7 +90,7 @@ export interface WorldFact {
   category: 'magic_system' | 'geography' | 'faction' | 'history' | 'secret_rule' | string;
   fact: string;
   scope: 'public' | 'restricted' | 'hidden_truth';
-  visibility?: 'always' | 'gated' | 'author_only';
+  visibility: 'always' | 'gated' | 'author_only';
   introducedAtChapter: number;
   unlockChapter?: number;
   revealChapter?: number;
@@ -105,6 +105,43 @@ export interface NarrativeExposureRules {
   mandatoryKnowledgeByChapter: { chapter: number; requiredFactIds: string[] }[];
 }
 
+export interface NarrativeExposureRule {
+  id: string;
+  threadId?: string;
+  startChapter: number;
+  endChapter: number;
+  allowedEvidence: string[];
+  forbiddenEvidence: string[];
+  allowedInferences: string[];
+  forbiddenInferences: string[];
+  readerKnowledgeCeiling: string;
+  relatedWorldFactIds: string[];
+  source?: JsonObject;
+}
+
+export interface MysteryStage {
+  id: string;
+  startChapter: number;
+  endChapter: number;
+  allowedKnowledge: string[];
+  allowedEvidence: string[];
+  allowedInferences: string[];
+  readerKnowledgeCeiling?: string;
+  source?: JsonObject;
+}
+
+export interface MysteryThread {
+  id: string;
+  question: string;
+  actualTruth: string;
+  stages: MysteryStage[];
+  source?: JsonObject;
+}
+
+export type OriginalityRules = JsonValue;
+export type StoryEngineSettings = JsonObject;
+export type AuthorOnlySecrets = JsonValue[];
+
 export interface AuthoritativeBlueprintV3 {
   schemaVersion?: JsonPrimitive;
   totalChapters?: number;
@@ -116,8 +153,8 @@ export interface AuthoritativeBlueprintV3 {
   mysteryThreads: JsonValue[];
   characterGates: CharacterGate[];
   spoilerGates: SpoilerGate[];
-  originality?: JsonValue;
-  authorOnlySecrets: JsonValue[];
+  originality?: OriginalityRules;
+  authorOnlySecrets: AuthorOnlySecrets;
   source: JsonObject;
 }
 
@@ -165,10 +202,10 @@ export interface StoryControl {
   spoilerGates: SpoilerGate[];
   continuityRules: ContinuityRules;
   pacingRules: PacingRules;
-  settings?: JsonObject;
+  settings?: StoryEngineSettings;
   mysteryThreads: JsonValue[];
-  originality?: JsonValue;
-  authorOnlySecrets: JsonValue[];
+  originality?: OriginalityRules;
+  authorOnlySecrets: AuthorOnlySecrets;
   authoritativeBlueprint?: AuthoritativeBlueprintV3;
 }
 
@@ -250,6 +287,7 @@ export interface StoryState {
 // ----------------------------------------------------
 export interface ChapterPlan {
   chapterNumber: number;
+  arcId?: string;
   title: string;
   focus: string;
   povCharacter: string;
@@ -260,6 +298,20 @@ export interface ChapterPlan {
   worldFactInteractions: string[];
   cluesDiscovered: string[];
   forbiddenSpoilers: string[];
+  primaryGoal?: string;
+  secondaryGoal?: string;
+  plannedCharacters?: string[];
+  plannedWorldFacts?: string[];
+  plannedEvidence?: string[];
+  plannedInferences?: string[];
+  mysteryAdvancement?: string;
+  mysteryStageId?: string;
+  conflict?: string;
+  expectedOutcome?: string;
+  continuityRequirements?: string[];
+  hookType?: string;
+  majorFocusCharacter?: string;
+  arcBeatIds?: string[];
 }
 
 export interface BatchPlan {
@@ -272,6 +324,42 @@ export interface BatchPlan {
   antiDriftMeasures: string[];
   planValid: boolean;
   planValidationErrors?: string[];
+  requestedChapterNumbers?: number[];
+}
+
+export type CharacterAccessLevel = 'LOCKED' | 'MENTION_ONLY' | 'DIRECT_ALLOWED' | 'POV_ALLOWED' | 'MAJOR_FOCUS_ALLOWED';
+
+export interface CharacterAccess {
+  level: CharacterAccessLevel;
+  canMention: boolean;
+  canAppearDirectly: boolean;
+  canUsePov: boolean;
+  canTakeMajorFocus: boolean;
+  unlockChapter: number;
+  directAppearanceChapter: number;
+  povUnlockChapter: number;
+  majorFocusNotBeforeChapter: number;
+}
+
+export interface ExposureProjection {
+  ruleIds: string[];
+  allowedEvidence: string[];
+  forbiddenEvidence: string[];
+  allowedInferences: string[];
+  forbiddenInferences: string[];
+  readerKnowledgeCeilings: string[];
+  relatedWorldFactIds: string[];
+}
+
+export interface StoryEngineSanityInfo {
+  chapter: number;
+  arcId: string;
+  activeCharacterCount: number;
+  lockedCharacterCount: number;
+  activeWorldFacts: string[];
+  lockedWorldFacts: string[];
+  activeExposureRuleIds: string[];
+  mysteryStageIds: string[];
 }
 
 // ----------------------------------------------------
