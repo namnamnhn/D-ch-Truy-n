@@ -365,30 +365,72 @@ export interface StoryEngineSanityInfo {
 // ----------------------------------------------------
 // 5. VALIDATION & AUTO-REPAIR
 // ----------------------------------------------------
-export type ViolationType = 
-  | 'CHARACTER_GATE' 
-  | 'SPOILER_LEAK' 
-  | 'PACING_RUSH' 
-  | 'INJURY_AMNESIA' 
-  | 'RESOURCE_CONTRADICTION' 
-  | 'CHARACTER_OOC' 
-  | 'WORLD_FACT_CONTRADICTION' 
-  | 'WORD_COUNT_DEFICIT';
+export const STORY_VIOLATION_TYPES = [
+  'PREMATURE_EVIDENCE',
+  'PREMATURE_INFERENCE',
+  'READER_KNOWLEDGE_OVEREXPOSURE',
+  'WORLD_FACT_GATE_VIOLATION',
+  'MYSTERY_STAGE_VIOLATION',
+  'PREMATURE_MYSTERY_RESOLUTION',
+  'REAL_WORLD_CONTAMINATION',
+  'ANACHRONISM',
+  'CHRONOLOGY_CONTRADICTION',
+  'LOCATION_CANON_CONTRADICTION',
+  'CHARACTER_SKILL_DRIFT',
+  'COMBAT_POWER_VIOLATION',
+  'OPPONENT_COMPETENCE_FAILURE',
+  'KNOWLEDGE_LEAK',
+  'PLAN_VIOLATION',
+  'ORIGINALITY_VIOLATION',
+  'CLICHE_OVERUSE',
+  'OUTPUT_STRUCTURE',
+  'STATE_DELTA_INVALID',
+  'QA_UNAVAILABLE',
+  // Backward-compatible deterministic classes retained from Story Engine V3 Tasks 1/2.
+  'CHARACTER_GATE',
+  'SPOILER_LEAK',
+  'PACING_RUSH',
+  'INJURY_AMNESIA',
+  'RESOURCE_CONTRADICTION',
+  'CHARACTER_OOC',
+  'WORLD_FACT_CONTRADICTION',
+  'WORD_COUNT_DEFICIT'
+] as const;
 
-export interface Violation {
-  type: ViolationType;
-  severity: 'CRITICAL' | 'WARNING';
-  chapter: number;
-  quoteOrDescription: string;
-  reason: string;
-  repairInstruction: string;
+export type StoryViolationType = typeof STORY_VIOLATION_TYPES[number];
+export type ViolationType = StoryViolationType;
+export type StoryViolationSeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
+export interface StoryViolation {
+  type: StoryViolationType;
+  severity: StoryViolationSeverity;
+  message: string;
+  chapterNumber?: number;
+  evidence?: string;
+  relatedRuleId?: string;
+  relatedCharacter?: string;
+  relatedThreadId?: string;
+  suggestedRepair?: string;
+  // Legacy aliases remain readable in saved projects and existing UI integrations.
+  chapter?: number;
+  quoteOrDescription?: string;
+  reason?: string;
+  repairInstruction?: string;
 }
 
-export interface ValidationResult {
+export type Violation = StoryViolation;
+
+export interface StoryValidationResult {
   pass: boolean;
-  continuityScore: number; // 0 - 100
-  pacingScore: number; // 0 - 100
-  violations: Violation[];
+  status: 'PASS' | 'FAIL' | 'QA_UNAVAILABLE';
+  violations: StoryViolation[];
+  warnings?: StoryViolation[];
+  attempts?: number;
+  repairAttempts?: number;
+  modelRole?: 'semantic-validator';
+  // Kept for persisted-project/UI backward compatibility.
+  continuityScore: number;
+  pacingScore: number;
   semanticChecks: {
     characterGating: boolean;
     worldFactContinuity: boolean;
@@ -397,6 +439,8 @@ export interface ValidationResult {
     characterTraitConsistency: boolean;
   };
 }
+
+export type ValidationResult = StoryValidationResult;
 
 // ----------------------------------------------------
 // 6. MEMORY & CONTINUITY INDEX

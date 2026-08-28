@@ -54,9 +54,12 @@ export interface ValidatorView {
   chapter: number;
   currentArc: ArcDefinition;
   storyControl: StoryControl;
-  approvedPlan: BatchPlan;
+  approvedPlan: ChapterPlan;
+  batchPlan: BatchPlan;
   storyState: StoryState;
-  output?: CreativeChapter[] | string;
+  generatedChapter?: CreativeChapter | string;
+  adjacentGeneratedChapters: CreativeChapter[];
+  relevantPriorChapters: CreativeChapter[];
 }
 
 function projectArc(arc: ArcDefinition): SafeArc {
@@ -175,16 +178,23 @@ export function createValidatorView(
   plan: BatchPlan,
   state: StoryState,
   chapter: number,
-  output?: CreativeChapter[] | string
+  output?: CreativeChapter | string,
+  adjacentGeneratedChapters: CreativeChapter[] = [],
+  relevantPriorChapters: CreativeChapter[] = []
 ): ValidatorView {
+  const approvedPlan = plan.chapters.find(candidate => candidate.chapterNumber === chapter);
+  if (!approvedPlan) throw new Error(`Validator View thiếu ChapterPlan đã duyệt cho Chương ${chapter}.`);
   return {
     kind: 'validator',
     chapter,
     currentArc: getArcForChapter(control, chapter),
     storyControl: control,
-    approvedPlan: plan,
+    approvedPlan,
+    batchPlan: plan,
     storyState: state,
-    output
+    generatedChapter: output,
+    adjacentGeneratedChapters,
+    relevantPriorChapters
   };
 }
 
@@ -235,9 +245,21 @@ export function buildValidatorContext(
   plan: BatchPlan,
   state: StoryState,
   startChapter: number,
-  output?: CreativeChapter[] | string
+  output?: CreativeChapter[] | string,
+  priorChapters: CreativeChapter[] = []
 ): string {
-  return `=== STORY ENGINE V3: VALIDATOR AUDIT CRITERIA ===\n${JSON.stringify(
-    createValidatorView(control, plan, state, startChapter, output), null, 2
-  )}`;
+  const generated = Array.isArray(output) ? output : [];
+  const chapters = generated.length
+    ? generated.map((chapter, index) => chapter.chapterNumber || startChapter + index)
+    : [startChapter];
+  const views = chapters.map((chapter, index) => createValidatorView(
+    control,
+    plan,
+    state,
+    chapter,
+    generated[index] || (typeof output === 'string' ? output : undefined),
+    generated.filter((_, adjacentIndex) => adjacentIndex !== index),
+    priorChapters.slice(-3)
+  ));
+  return `=== STORY ENGINE V3: CHAPTER-SCOPED VALIDATOR VIEWS ===\n${JSON.stringify(views, null, 2)}`;
 }

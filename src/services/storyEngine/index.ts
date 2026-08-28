@@ -8,6 +8,7 @@ export * from './planner';
 export * from './writer';
 export * from './styleLinter';
 export * from './validator';
+export * from './semanticValidator';
 export * from './autoRepair';
 export * from './stateExtractor';
 export * from './memoryManager';

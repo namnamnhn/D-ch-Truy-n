@@ -12,7 +12,8 @@ import {
   StoryState,
   ValidationResult,
   Violation,
-  ViolationType
+  ViolationType,
+  STORY_VIOLATION_TYPES
 } from './types';
 import { createStoryControlFromBlueprint, validateBlueprintV3Object } from './blueprintParser';
 import {
@@ -264,24 +265,44 @@ function normalizeStoryState(value: unknown): StoryState | undefined {
 
 function normalizeValidationResult(value: unknown): ValidationResult | undefined {
   if (!isRecord(value)) return undefined;
-  const violationTypes: ViolationType[] = [
-    'CHARACTER_GATE', 'SPOILER_LEAK', 'PACING_RUSH', 'INJURY_AMNESIA',
-    'RESOURCE_CONTRADICTION', 'CHARACTER_OOC', 'WORLD_FACT_CONTRADICTION', 'WORD_COUNT_DEFICIT'
-  ];
-  const violations: Violation[] = Array.isArray(value.violations) ? value.violations.filter(isRecord).map(entry => ({
-    type: violationTypes.find(type => type === entry.type) || 'WORLD_FACT_CONTRADICTION',
-    severity: entry.severity === 'CRITICAL' ? 'CRITICAL' : 'WARNING',
-    chapter: normalizePositiveInteger(entry.chapter) || 1,
-    quoteOrDescription: normalizeText(entry.quoteOrDescription) || '',
-    reason: normalizeText(entry.reason) || '',
-    repairInstruction: normalizeText(entry.repairInstruction) || ''
-  })) : [];
+  const violationTypes: readonly ViolationType[] = STORY_VIOLATION_TYPES;
+  const normalizeViolations = (raw: unknown): Violation[] => Array.isArray(raw) ? raw.filter(isRecord).map(entry => {
+    const severity = entry.severity === 'CRITICAL' || entry.severity === 'HIGH'
+      || entry.severity === 'MEDIUM' || entry.severity === 'LOW'
+      ? entry.severity : entry.severity === 'WARNING' ? 'LOW' : 'HIGH';
+    const chapterNumber = normalizePositiveInteger(entry.chapterNumber) || normalizePositiveInteger(entry.chapter) || undefined;
+    const message = normalizeText(entry.message) || normalizeText(entry.reason) || 'Imported story validation issue.';
+    const evidence = normalizeText(entry.evidence) || normalizeText(entry.quoteOrDescription) || undefined;
+    const suggestedRepair = normalizeText(entry.suggestedRepair) || normalizeText(entry.repairInstruction) || undefined;
+    return {
+      type: violationTypes.find(type => type === entry.type) || 'WORLD_FACT_CONTRADICTION',
+      severity,
+      chapterNumber,
+      message,
+      evidence,
+      suggestedRepair,
+      chapter: chapterNumber,
+      quoteOrDescription: evidence || message,
+      reason: message,
+      repairInstruction: suggestedRepair || ''
+    };
+  }) : [];
+  const violations = normalizeViolations(value.violations);
+  const warnings = normalizeViolations(value.warnings);
   const semanticChecks = isRecord(value.semanticChecks) ? value.semanticChecks : {};
+  const pass = value.pass === true;
+  const status = value.status === 'QA_UNAVAILABLE' ? 'QA_UNAVAILABLE' : pass ? 'PASS' : 'FAIL';
   return {
-    pass: value.pass === true,
+    pass,
+    status,
     continuityScore: typeof value.continuityScore === 'number' && Number.isFinite(value.continuityScore) ? value.continuityScore : 0,
     pacingScore: typeof value.pacingScore === 'number' && Number.isFinite(value.pacingScore) ? value.pacingScore : 0,
     violations,
+    warnings,
+    attempts: normalizePositiveInteger(value.attempts) || undefined,
+    repairAttempts: typeof value.repairAttempts === 'number' && Number.isInteger(value.repairAttempts) && value.repairAttempts >= 0
+      ? value.repairAttempts : undefined,
+    modelRole: value.modelRole === 'semantic-validator' ? 'semantic-validator' : undefined,
     semanticChecks: {
       characterGating: semanticChecks.characterGating === true,
       worldFactContinuity: semanticChecks.worldFactContinuity === true,

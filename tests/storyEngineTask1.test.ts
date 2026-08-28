@@ -148,6 +148,7 @@ function makeCreativeState(): CreativeState {
     memoryIndex: [{ chapterNumber: 1, title: 'Cũ', summary: 'Cũ', charactersInvolved: [], locations: [] }],
     lastValidationResult: {
       pass: true,
+      status: 'PASS',
       continuityScore: 100,
       pacingScore: 100,
       violations: [],

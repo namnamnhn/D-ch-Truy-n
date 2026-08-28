@@ -18,6 +18,7 @@ import { repairBatchOutput } from './autoRepair';
 import { extractAndMergeState } from './stateExtractor';
 import { buildWriterContext } from './contextBuilder';
 import { splitChaptersByArc, validateArcRanges } from './storyAccess';
+import { makeStoryViolation } from './semanticValidator';
 
 export interface PipelineOptions {
   bible: StoryBible;
@@ -56,16 +57,17 @@ export function canReuseStoryControl(control: StoryControl | undefined, expected
 function structuralFailure(message: string, chapter: number): ValidationResult {
   return {
     pass: false,
+    status: 'FAIL',
     continuityScore: 0,
     pacingScore: 0,
-    violations: [{
-      type: 'WORLD_FACT_CONTRADICTION',
+    violations: [makeStoryViolation({
+      type: 'OUTPUT_STRUCTURE',
       severity: 'CRITICAL',
-      chapter,
-      quoteOrDescription: message,
-      reason: message,
-      repairInstruction: 'Sửa planning/output contract rồi chạy lại toàn batch.'
-    }],
+      chapterNumber: chapter,
+      message,
+      suggestedRepair: 'Fix the planning/output contract and rerun the entire batch.'
+    })],
+    warnings: [],
     semanticChecks: {
       characterGating: false,
       worldFactContinuity: false,
@@ -74,6 +76,22 @@ function structuralFailure(message: string, chapter: number): ValidationResult {
       characterTraitConsistency: false
     }
   };
+}
+
+function isRepairable(result: ValidationResult): boolean {
+  if (result.status !== 'FAIL') return false;
+  if (result.violations.some(violation => violation.severity === 'CRITICAL')) return false;
+  return result.violations.some(violation => violation.severity === 'MEDIUM' || violation.severity === 'HIGH');
+}
+
+function validationFailureMessage(result: ValidationResult, repairCount: number, maxRepairs: number): string {
+  if (result.status === 'QA_UNAVAILABLE') {
+    return 'Không thể hoàn tất kiểm định chất lượng; chương chưa được lưu.';
+  }
+  if (repairCount >= maxRepairs) {
+    return 'Đã thử sửa nhưng chương vẫn chưa đạt kiểm định.';
+  }
+  return 'Chương chưa đạt kiểm định chất lượng.';
 }
 
 function emptyBatchPlan(chapters: number[]): BatchPlan {
@@ -166,6 +184,9 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
   };
   const fastRunner = aiFastRunner || (async (prompt: string) => prompt);
   const proRunner = aiProRunner || fastRunner;
+  const semanticRunner = aiProRunner
+    ? (prompt: string, systemInstruction: string) => aiProRunner(prompt, systemInstruction)
+    : undefined;
 
   reportProgress('compiler', 'Kiểm tra & biên dịch Story Control...', 10);
   const control = canReuseStoryControl(existingControl, hash)
@@ -232,17 +253,21 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
 
   reportProgress('validating', 'Hậu kiểm logic, continuity & pacing...', 75);
   let validationResult = await validateBatchOutput(
-    generatedChapters, batchPlan, control, currentState, bible, (prompt, sys) => fastRunner(prompt, sys)
+    generatedChapters, batchPlan, control, currentState, bible, semanticRunner, existingChapters
   );
+  onLog(`[Semantic QA] role=${validationResult.modelRole || 'semantic-validator'} attempts=${validationResult.attempts || 0} status=${validationResult.status} violations=${validationResult.violations.map(violation => `${violation.type}:${violation.severity}`).join(',') || 'none'}`);
   let repairCount = 0;
   const maxRepairs = 2;
-  while (!validationResult.pass && repairCount < maxRepairs) {
+  while (isRepairable(validationResult) && repairCount < maxRepairs) {
     repairCount++;
     reportProgress('repairing', `Auto Repair lượt ${repairCount}/${maxRepairs}...`, 80 + repairCount * 5, repairCount);
     let repairFailed = false;
     for (let index = 0; index < generatedChapters.length; index++) {
       const chapter = generatedChapters[index].chapterNumber || requested[index];
-      const chapterViolations = validationResult.violations.filter(violation => violation.chapter === chapter);
+      const chapterViolations = validationResult.violations.filter(violation => {
+        const violationChapter = violation.chapterNumber ?? violation.chapter;
+        return violationChapter === undefined || violationChapter === chapter;
+      });
       if (chapterViolations.length === 0) continue;
       try {
         const repaired = await repairBatchOutput(
@@ -251,21 +276,26 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
           chapterViolations,
           singleChapterPlan(batchPlan, chapter),
           writerContexts.get(chapter) || '',
+          control,
           (prompt, sys) => proRunner(prompt, sys)
         );
         generatedChapters[index] = repaired.chapters[0];
         rawOutputs.set(chapter, repaired.rawOutput);
-      } catch {
+      } catch (error) {
         repairFailed = true;
+        onLog(`[Semantic Repair] attempt=${repairCount} chapter=${chapter} output=invalid error=${error instanceof Error ? error.name : 'Error'}`);
       }
     }
     if (repairFailed) continue;
     validationResult = await validateBatchOutput(
-      generatedChapters, batchPlan, control, currentState, bible, (prompt, sys) => fastRunner(prompt, sys)
+      generatedChapters, batchPlan, control, currentState, bible, semanticRunner, existingChapters
     );
+    validationResult.repairAttempts = repairCount;
+    onLog(`[Semantic QA] role=${validationResult.modelRole || 'semantic-validator'} attempts=${validationResult.attempts || 0} repairAttempt=${repairCount} status=${validationResult.status} violations=${validationResult.violations.map(violation => `${violation.type}:${violation.severity}`).join(',') || 'none'}`);
   }
   if (!validationResult.pass) {
-    const message = `Hậu kiểm QA không đạt: ${validationResult.violations.map(violation => violation.reason).join('; ')}`;
+    const message = validationFailureMessage(validationResult, repairCount, maxRepairs);
+    onLog(`[Pipeline] QA rejected batch: status=${validationResult.status}; repairAttempts=${repairCount}; chapters=[${requested.join(',')}]`);
     return failResult(message, nextChapter, control, currentState, bible, batchPlan, repairCount, validationResult);
   }
 
