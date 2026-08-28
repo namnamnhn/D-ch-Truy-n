@@ -9,7 +9,7 @@ import {
   StoryState
 } from './types';
 import { calculateArcProgress } from './arcController';
-import { formatMemoriesForContext, retrieveRelevantMemories } from './memoryManager';
+import { formatMemoriesForContext, retrieveRelevantMemories, sanitizeMemoriesForReader } from './memoryManager';
 import {
   getActiveMysteryStages,
   getArcForChapter,
@@ -60,6 +60,7 @@ export interface ValidatorView {
   generatedChapter?: CreativeChapter | string;
   adjacentGeneratedChapters: CreativeChapter[];
   relevantPriorChapters: CreativeChapter[];
+  relevantMemories?: ChapterMemory[];
 }
 
 function projectArc(arc: ArcDefinition): SafeArc {
@@ -87,6 +88,9 @@ function projectReaderSafeState(control: StoryControl, state: StoryState, chapte
     clues: (state.clues || []).map(({ actualTruthHidden: _actualTruthHidden, ...readerSafeClue }) => readerSafeClue),
     unresolvedThreads: state.unresolvedThreads,
     recentConsequences: state.recentConsequences,
+    consequences: (state.consequences || []).filter(item => item.status === 'active'),
+    knowledgeLedger: (state.knowledgeLedger || []).filter(entry => !entry.characterId || availableCharacters.has(entry.characterId)),
+    timeline: (state.timeline || []).slice(-30),
     currentArcId: getArcForChapter(control, chapter).id,
     worldFactStates: Object.fromEntries(Object.entries(state.worldFactStates || {}).filter(([id]) => availableFacts.has(id)))
   };
@@ -130,7 +134,26 @@ export function createPlannerView(
 ): PlannerView {
   const arc = getArcForChapter(control, chapter);
   const characters = projectCharactersForChapter(control, chapter).available;
-  const relevantMemories = retrieveRelevantMemories(memoryIndex, characters.map(character => character.name), chapter, 4);
+  const activeCharacterIds = characters.map(character => character.id);
+  const activeNames = characters.map(character => character.name);
+  const activeStates = Object.values(state.characterStates || {}).filter(character =>
+    activeCharacterIds.includes(character.characterId) || activeNames.includes(character.name));
+  const relevantMemories = sanitizeMemoriesForReader(retrieveRelevantMemories(memoryIndex, {
+    currentChapter: chapter,
+    currentArcId: arc.id,
+    characterIds: activeCharacterIds,
+    characterNames: activeNames,
+    locations: activeStates.flatMap(character => [character.location, character.priorLocation || '']).filter(Boolean),
+    threadIds: state.unresolvedThreads,
+    factIds: (state.knowledgeLedger || []).map(entry => entry.factId),
+    seedIds: (state.longTermSeeds || []).filter(seed => seed.status !== 'resolved').map(seed => seed.id),
+    injuryIds: activeStates.flatMap(character => character.injuries || []).filter(injury => injury.status !== 'recovered')
+      .map(injury => injury.id || injury.type),
+    relationshipIds: (state.relationships || []).filter(relationship => activeNames.includes(relationship.characterA)
+      || activeNames.includes(relationship.characterB)).map(relationship =>
+        [relationship.characterA, relationship.characterB].sort().join('###')),
+    text: `${arc.theme} ${arc.coreConflict}`
+  }, 4), control);
   return {
     kind: 'planner',
     chapter,
@@ -180,7 +203,8 @@ export function createValidatorView(
   chapter: number,
   output?: CreativeChapter | string,
   adjacentGeneratedChapters: CreativeChapter[] = [],
-  relevantPriorChapters: CreativeChapter[] = []
+  relevantPriorChapters: CreativeChapter[] = [],
+  relevantMemories: ChapterMemory[] = []
 ): ValidatorView {
   const approvedPlan = plan.chapters.find(candidate => candidate.chapterNumber === chapter);
   if (!approvedPlan) throw new Error(`Validator View thiếu ChapterPlan đã duyệt cho Chương ${chapter}.`);
@@ -194,7 +218,8 @@ export function createValidatorView(
     storyState: state,
     generatedChapter: output,
     adjacentGeneratedChapters,
-    relevantPriorChapters
+    relevantPriorChapters,
+    relevantMemories
   };
 }
 
@@ -229,15 +254,18 @@ export function buildWriterContext(
   const views = chapters.map(chapter => createWriterView(
     bible, control, plan, state, memoryIndex, chapter, recentChapters
   ));
+  const projectionPayload = views.map(({ relevantMemories: _relevantMemories, ...view }) => view);
+  const uniqueMemories = Array.from(new Map(views.flatMap(view => view.relevantMemories)
+    .map(memory => [memory.id || `chapter_${memory.chapterNumber}`, memory])).values());
   return `=== LONG-FORM STORY ENGINE V3: WRITER PROJECTION ===
 
 [DANH SÁCH CẤM KỴ TUYỆT ĐỐI]
 Các gate đã được cưỡng chế bằng projection dữ liệu; payload author-only/locked không được chuyển cho Writer.
 
-${JSON.stringify(views, null, 2)}
+${JSON.stringify(projectionPayload, null, 2)}
 
 [KÝ ỨC CÁC CHƯƠNG LIÊN QUAN]
-${formatMemoriesForContext(views.flatMap(view => view.relevantMemories))}`;
+${formatMemoriesForContext(uniqueMemories)}`;
 }
 
 export function buildValidatorContext(
@@ -246,7 +274,8 @@ export function buildValidatorContext(
   state: StoryState,
   startChapter: number,
   output?: CreativeChapter[] | string,
-  priorChapters: CreativeChapter[] = []
+  priorChapters: CreativeChapter[] = [],
+  memoryIndex: ChapterMemory[] = []
 ): string {
   const generated = Array.isArray(output) ? output : [];
   const chapters = generated.length
@@ -259,7 +288,16 @@ export function buildValidatorContext(
     chapter,
     generated[index] || (typeof output === 'string' ? output : undefined),
     generated.filter((_, adjacentIndex) => adjacentIndex !== index),
-    priorChapters.slice(-3)
+    priorChapters.slice(-3),
+    retrieveRelevantMemories(memoryIndex, {
+      currentChapter: chapter,
+      currentArcId: getArcForChapter(control, chapter).id,
+      threadIds: state.unresolvedThreads,
+      factIds: (state.knowledgeLedger || []).map(entry => entry.factId),
+      seedIds: (state.longTermSeeds || []).filter(seed => seed.status !== 'resolved').map(seed => seed.id),
+      injuryIds: Object.values(state.characterStates || {}).flatMap(character => character.injuries || [])
+        .filter(injury => injury.status !== 'recovered').map(injury => injury.id || injury.type)
+    }, 6)
   ));
   return `=== STORY ENGINE V3: CHAPTER-SCOPED VALIDATOR VIEWS ===\n${JSON.stringify(views, null, 2)}`;
 }

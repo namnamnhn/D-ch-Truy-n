@@ -6,7 +6,7 @@ type CreativePageProps = UseCreativePageProps
 
 const STEPS = [
     { id: 1, title: "Ý tưởng", desc: "Thiết lập bối cảnh chung" },
-    { id: 2, title: "Thế giới", desc: "Hệ thống tu luyện, mô tả" },
+    { id: 2, title: "Thế giới", desc: "Bối cảnh, quy tắc, mô tả" },
     { id: 3, title: "Nhân vật", desc: "Main & phụ" },
     { id: 4, title: "Dàn ý", desc: "Cốt truyện chi tiết" },
     { id: 5, title: "Sáng tác", desc: "Auto viết bằng AI" },
@@ -402,7 +402,7 @@ export const CreativePage: React.FC<CreativePageProps> = (props) => {
                                 <div className="flex flex-wrap items-center justify-center gap-3 relative z-10">
                                     <button 
                                         onClick={handleGenerateCreativeChapters}
-                                        disabled={isGenerating || (!premise || !outline)}
+                                        disabled={isGenerating || (!premise || !outline) || state.storyEngineSanity?.pass !== true}
                                         className="px-10 py-5 bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 text-slate-900 font-black text-lg rounded-2xl transition-all shadow-xl shadow-amber-600/30 flex items-center gap-3 disabled:opacity-50 transform active:scale-95"
                                     >
                                         {isGenerating ? <RefreshCw className="w-6 h-6 animate-spin"/> : <Sparkles className="w-6 h-6" />}
@@ -487,8 +487,10 @@ export const CreativePage: React.FC<CreativePageProps> = (props) => {
                                         <h4 className="font-bold text-sm text-slate-800 dark:text-slate-200 flex items-center gap-2">
                                             <Layers className="w-4 h-4 text-amber-500" /> Trạng Thái Long-Form Story Engine
                                         </h4>
-                                        <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
-                                            <ShieldCheck className="w-3.5 h-3.5" /> Gating & QA Active
+                                        <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full border flex items-center gap-1 ${state.storyEngineSanity?.pass !== true
+                                            ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20'
+                                            : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'}`}>
+                                            <ShieldCheck className="w-3.5 h-3.5" /> Story Engine V3: {state.storyEngineSanity?.pass === true ? 'READY' : state.storyEngineSanity ? 'BLOCKED' : 'CHECK REQUIRED'}
                                         </span>
                                     </div>
                                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-xs">
@@ -537,6 +539,24 @@ export const CreativePage: React.FC<CreativePageProps> = (props) => {
                                             </div>
                                         </div>
                                     </div>
+                                    {state.storyEngineSanity && (
+                                        <details className="text-xs rounded-xl border border-slate-100 dark:border-slate-800 p-3.5">
+                                            <summary className="cursor-pointer font-bold text-slate-600 dark:text-slate-300">Chi tiết kiểm tra an toàn</summary>
+                                            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3 text-slate-500 dark:text-slate-400">
+                                                <span>Blueprint: {state.storyEngineSanity.blueprintLoaded ? 'Loaded' : 'Fallback'}</span>
+                                                <span>Arcs: {state.storyEngineSanity.arcCount} ({state.storyEngineSanity.exactArcCoverage ? 'Exact' : 'Invalid'})</span>
+                                                <span>Characters: {state.storyEngineSanity.activeCharacterCount} active / {state.storyEngineSanity.lockedCharacterCount} locked</span>
+                                                <span>World facts: {state.storyEngineSanity.activeWorldFactCount} active / {state.storyEngineSanity.lockedWorldFactCount} locked</span>
+                                                <span>Exposure: {state.storyEngineSanity.activeExposureRuleIds.length} rules</span>
+                                                <span>Memory: {state.storyEngineSanity.memoryEntryCount} entries</span>
+                                                <span>Knowledge: {state.storyEngineSanity.knowledgeEntryCount} entries</span>
+                                                <span>QA/Models: {state.storyEngineSanity.modelRoutingRoles.filter(role => role.status !== 'unavailable').length}/{state.storyEngineSanity.modelRoutingRoles.length}</span>
+                                            </div>
+                                            {state.storyEngineSanity.errors.length > 0 && (
+                                                <div className="mt-3 text-rose-500 font-semibold">{state.storyEngineSanity.errors.join(' ')}</div>
+                                            )}
+                                        </details>
+                                    )}
                                 </div>
                             )}
 

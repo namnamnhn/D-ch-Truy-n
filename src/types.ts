@@ -1,5 +1,5 @@
 
-import type { AuthoritativeBlueprintV3, ChapterMemory, JsonObject, StoryControl, StoryState, ValidationResult } from './services/storyEngine/types';
+import type { AuthoritativeBlueprintV3, ChapterMemory, JsonObject, SanityCheckResult, StoryControl, StoryState, ValidationResult } from './services/storyEngine/types';
 
 export enum FileStatus {
   IDLE = 'IDLE',
@@ -294,5 +294,6 @@ export interface CreativeState {
     blueprintV3?: AuthoritativeBlueprintV3;
     safeLongFormMode?: boolean;
     lastValidationResult?: ValidationResult;
+    storyEngineSanity?: SanityCheckResult;
 }
 

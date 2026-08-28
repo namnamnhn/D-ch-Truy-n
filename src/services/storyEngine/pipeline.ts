@@ -8,7 +8,10 @@ import {
   StoryControl,
   StoryState,
   ValidationResult,
-  STORY_CONTROL_SCHEMA_VERSION
+  STORY_CONTROL_SCHEMA_VERSION,
+  STORY_STATE_SCHEMA_VERSION,
+  MEMORY_SCHEMA_VERSION,
+  StoryModelRole
 } from './types';
 import { compileStoryControl, computeBibleHash, createInitialStoryState } from './compiler';
 import { generateBatchPlan } from './planner';
@@ -19,6 +22,8 @@ import { extractAndMergeState } from './stateExtractor';
 import { buildWriterContext } from './contextBuilder';
 import { splitChaptersByArc, validateArcRanges } from './storyAccess';
 import { makeStoryViolation } from './semanticValidator';
+import { getStoryModelRoute } from './modelRouting';
+import { compactMemoryIndex } from './memoryManager';
 
 export interface PipelineOptions {
   bible: StoryBible;
@@ -29,6 +34,7 @@ export interface PipelineOptions {
   batchSize: number;
   aiFastRunner?: (prompt: string, sys?: string) => Promise<string>;
   aiProRunner?: (prompt: string, sys?: string) => Promise<string>;
+  aiSemanticRunner?: (prompt: string, sys?: string) => Promise<string>;
   onProgress?: (info: PipelineProgressInfo | string, progressPercent?: number) => void;
   onLog?: (message: string) => void;
 }
@@ -41,6 +47,7 @@ export interface PipelineResult {
   newCharacters: Character[];
   updatedContinuitySummary: string;
   newMemories: ChapterMemory[];
+  nextMemories: ChapterMemory[];
   validationResult: ValidationResult;
   batchPlan: BatchPlan;
   repairCount: number;
@@ -52,6 +59,14 @@ export function canReuseStoryControl(control: StoryControl | undefined, expected
     && control.schemaVersion === STORY_CONTROL_SCHEMA_VERSION
     && control.sourceHash === expectedHash
     && control.arcs?.length > 0);
+}
+
+export function canReuseDerivedState(state: StoryState | undefined, expectedHash: string): state is StoryState {
+  return Boolean(state && state.schemaVersion === STORY_STATE_SCHEMA_VERSION && state.sourceHash === expectedHash);
+}
+
+export function compatibleMemories(memories: ChapterMemory[] | undefined, expectedHash: string): ChapterMemory[] {
+  return (memories || []).filter(memory => memory.schemaVersion === MEMORY_SCHEMA_VERSION && memory.sourceHash === expectedHash);
 }
 
 function structuralFailure(message: string, chapter: number): ValidationResult {
@@ -155,6 +170,7 @@ function failResult(
     newCharacters: [],
     updatedContinuitySummary: bible.continuitySummary || '',
     newMemories: [],
+    nextMemories: [],
     validationResult,
     batchPlan,
     repairCount,
@@ -172,6 +188,7 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
     batchSize,
     aiFastRunner,
     aiProRunner,
+    aiSemanticRunner,
     onProgress = () => {},
     onLog = () => {}
   } = options;
@@ -184,15 +201,28 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
   };
   const fastRunner = aiFastRunner || (async (prompt: string) => prompt);
   const proRunner = aiProRunner || fastRunner;
-  const semanticRunner = aiProRunner
-    ? (prompt: string, systemInstruction: string) => aiProRunner(prompt, systemInstruction)
+  const roleRunner = (role: StoryModelRole) => {
+    const route = getStoryModelRoute(role, { FAST: Boolean(aiFastRunner), QUALITY: Boolean(aiProRunner) });
+    onLog(`[ModelRouting] role=${role} tier=${route.tier} status=${route.status}`);
+    return route.tier === 'QUALITY' ? proRunner : fastRunner;
+  };
+  const semanticSource = aiSemanticRunner || aiProRunner;
+  const semanticRunner = semanticSource
+    ? (prompt: string, systemInstruction: string) => {
+      const route = getStoryModelRoute('STORY_VALIDATOR_SEMANTIC', { QUALITY: true });
+      onLog(`[ModelRouting] role=${route.role} tier=${route.tier} status=${route.status}`);
+      return semanticSource(prompt, systemInstruction);
+    }
     : undefined;
 
   reportProgress('compiler', 'Kiểm tra & biên dịch Story Control...', 10);
   const control = canReuseStoryControl(existingControl, hash)
     ? existingControl
-    : await compileStoryControl(bible, prompt => fastRunner(prompt, 'Story Control Compiler'));
-  const currentState = existingState || createInitialStoryState(control, existingChapters.length, bible.characters);
+    : await compileStoryControl(bible, prompt => roleRunner('STORY_CONTROL_COMPILER')(prompt, 'Story Control Compiler'));
+  const currentState = canReuseDerivedState(existingState, control.sourceHash)
+    ? existingState
+    : { ...createInitialStoryState(control, existingChapters.length, bible.characters), continuitySummary: bible.continuitySummary };
+  const currentMemories = compatibleMemories(existingMemories, control.sourceHash);
   let batchPlan = emptyBatchPlan(requested);
   try {
     validateArcRanges(control);
@@ -209,8 +239,8 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
     // Chapter-isolated calls prevent a plan for an earlier chapter from seeing a later gate/arc projection.
     for (const chapter of requested) {
       plans.push(await generateBatchPlan(
-        bible, control, currentState, existingMemories, chapter, 1, existingChapters,
-        (prompt, sys) => fastRunner(prompt, sys)
+        bible, control, currentState, currentMemories, chapter, 1, existingChapters,
+        (prompt, sys) => roleRunner('PLANNER')(prompt, sys)
       ));
     }
     batchPlan = mergePlans(plans, requested);
@@ -231,10 +261,10 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
     for (const chapter of requested) {
       const chapterPlan = singleChapterPlan(batchPlan, chapter);
       const writerContext = buildWriterContext(
-        bible, control, chapterPlan, currentState, existingMemories, chapter, 1, existingChapters
+        bible, control, chapterPlan, currentState, currentMemories, chapter, 1, existingChapters
       );
       writerContexts.set(chapter, writerContext);
-      const result = await generateChaptersProse(writerContext, chapterPlan, (prompt, sys) => proRunner(prompt, sys));
+      const result = await generateChaptersProse(writerContext, chapterPlan, (prompt, sys) => roleRunner('WRITER')(prompt, sys));
       generatedChapters.push(...result.chapters);
       generatedCharacters.push(...result.newCharacters);
       if (result.storySummary) summaries.push(result.storySummary);
@@ -277,7 +307,7 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
           singleChapterPlan(batchPlan, chapter),
           writerContexts.get(chapter) || '',
           control,
-          (prompt, sys) => proRunner(prompt, sys)
+          (prompt, sys) => roleRunner('AUTO_REPAIR')(prompt, sys)
         );
         generatedChapters[index] = repaired.chapters[0];
         rawOutputs.set(chapter, repaired.rawOutput);
@@ -307,8 +337,9 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
     [...(bible.characters || []), ...generatedCharacters],
     summaries.join(' '),
     nextChapter,
-    (prompt, sys) => fastRunner(prompt, sys)
+    (prompt, sys) => roleRunner('STATE_EXTRACTOR')(prompt, sys)
   );
+  const nextMemories = compactMemoryIndex([...currentMemories, ...extracted.newMemories], 240, extracted.nextState);
   reportProgress('completed', 'Hoàn tất lượt viết!', 100);
   return {
     success: true,
@@ -318,6 +349,7 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
     newCharacters: [...generatedCharacters, ...extracted.newCharacters],
     updatedContinuitySummary: extracted.updatedContinuitySummary,
     newMemories: extracted.newMemories,
+    nextMemories,
     validationResult,
     batchPlan,
     repairCount

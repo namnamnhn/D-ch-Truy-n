@@ -1,5 +1,5 @@
 import { Character } from '../../types';
-import { StoryBible, StoryControl, StoryState, ArcDefinition, CharacterGate, SpoilerGate, CharacterRegistryEntry, WorldFact, NarrativeExposureRules, STORY_CONTROL_SCHEMA_VERSION } from './types';
+import { StoryBible, StoryControl, StoryState, ArcDefinition, CharacterGate, SpoilerGate, CharacterRegistryEntry, WorldFact, NarrativeExposureRules, STORY_CONTROL_SCHEMA_VERSION, STORY_STATE_SCHEMA_VERSION } from './types';
 import { getCurrentArc, calculateArcProgress } from './arcController';
 import { createStoryControlFromBlueprint, parseBlueprintContent, validateBlueprintV3Object } from './blueprintParser';
 import { isRecord } from './runtimeValidation';
@@ -24,7 +24,7 @@ export function computeBibleHash(bible: StoryBible): string {
     seedTitle: bible.seedTitle,
     genre: bible.genre,
     seriesPremise: bible.seriesPremise,
-    continuitySummary: bible.continuitySummary,
+    // continuitySummary is derived runtime state and must not invalidate its own authoritative source hash.
     worldNotes: bible.worldNotes,
     charNotes: bible.charNotes,
     outline: bible.outline,
@@ -245,14 +245,14 @@ export function createDeterministicStoryControl(bible: StoryBible, sourceHash: s
   const arcThemes = [
     { title: 'Khởi Đầu & Thức Tỉnh', theme: 'Bắt đầu cuộc hành trình và phát hiện tiềm năng bản thân', conflict: 'Thích nghi hoàn cảnh và vượt qua áp chế sơ khởi' },
     { title: 'Thử Thách Sơ Cấp', theme: 'Khẳng định thực lực trong phạm vi ban đầu', conflict: 'Cạnh tranh nội bộ thế lực' },
-    { title: 'Bí Cảnh & Duyên Ngộ', theme: 'Khám phá di tích cổ xưa, thu thập cơ duyên', conflict: 'Đối đầu các thế lực đối địch săn tìm báu vật' },
-    { title: 'Xung Đột Mở Rộng', theme: 'Thế giới mở rộng, bước chân ra ngoài khu vực quen thuộc', conflict: 'Mâu thuẫn giữa các tông môn / phe phái lớn' },
+    { title: 'Dấu Vết & Khám Phá', theme: 'Khám phá địa điểm, bằng chứng và cơ hội mới', conflict: 'Các lợi ích đối lập cùng tranh giành một mục tiêu' },
+    { title: 'Xung Đột Mở Rộng', theme: 'Bối cảnh mở rộng ra ngoài khu vực quen thuộc', conflict: 'Mâu thuẫn giữa các nhóm và lợi ích lớn' },
     { title: 'Đột Phá & Biến Cố', theme: 'Bước ngoặt lớn thay đổi cục diện cuộc đời', conflict: 'Bị truy đuổi hoặc đối mặt với thảm họa bất ngờ' },
-    { title: 'Tích Lũy Sức Mạnh', theme: 'Ẩn nhẫn tu luyện, thành lập thế lực riêng', conflict: 'Thu phục nhân tài và xây dựng căn cơ' },
+    { title: 'Tích Lũy Năng Lực', theme: 'Rèn luyện, chuẩn bị và xây dựng mạng lưới hỗ trợ', conflict: 'Tập hợp đồng minh và tạo nền tảng hành động' },
     { title: 'Phản Kích & Khẳng Định', theme: 'Trở lại quét sạch kẻ thù cũ, lập lại trật tự', conflict: 'Đại chiến thanh trừng ân oán' },
-    { title: 'Bí Mật Thiên Địa', theme: 'Tiếp cận chân tướng của thế giới và lịch sử cổ đại', conflict: 'Chống lại các thế lực ngầm thao túng vận mệnh' },
-    { title: 'Đại Họa Giáng Lâm', theme: 'Hiểm họa toàn cầu / tam giới bùng nổ', conflict: 'Tập hợp đồng minh ngăn chặn sự diệt vong' },
-    { title: 'Đỉnh Cao Phong Ma', theme: 'Trận chiến quyết định vận mệnh thế giới', conflict: 'Đối đầu trực diện với thế lực tột cùng' }
+    { title: 'Bí Mật Nền Tảng', theme: 'Tiếp cận sự thật về bối cảnh và lịch sử quan trọng', conflict: 'Chống lại những lực lượng ngầm thao túng tình thế' },
+    { title: 'Khủng Hoảng Lan Rộng', theme: 'Hiểm họa vượt khỏi phạm vi xung đột ban đầu', conflict: 'Tập hợp đồng minh để ngăn hậu quả không thể đảo ngược' },
+    { title: 'Quyết Định Cuối', theme: 'Cuộc đối đầu quyết định kết cục của hành trình', conflict: 'Đối diện trực tiếp với lực lượng đối kháng chính' }
   ];
 
   for (let i = 0; i < totalArcsCount; i++) {
@@ -312,9 +312,9 @@ export function createDeterministicStoryControl(bible: StoryBible, sourceHash: s
   // Khởi tạo World Facts từ Bible
   const worldFacts: WorldFact[] = [
     {
-      id: 'fact_magic_rules',
-      category: 'magic_system',
-      fact: bible.worldNotes || 'Hệ thống tu luyện theo từng cảnh giới nghiêm ngặt.',
+      id: 'fact_world_rules',
+      category: 'world_rules',
+      fact: bible.worldNotes || `Các quy tắc của bối cảnh ${bible.genre || 'đã chọn'} phải nhất quán với tiền đề.`,
       scope: 'public',
       visibility: 'always',
       introducedAtChapter: 1
@@ -322,7 +322,7 @@ export function createDeterministicStoryControl(bible: StoryBible, sourceHash: s
     {
       id: 'fact_world_geography',
       category: 'geography',
-      fact: 'Bối cảnh thế giới phân tầng từ hạ giới lên thượng giới.',
+      fact: 'Địa lý, khoảng cách và các khu vực quan trọng tuân theo mô tả thế giới của tác giả.',
       scope: 'public',
       visibility: 'always',
       introducedAtChapter: 1
@@ -331,11 +331,11 @@ export function createDeterministicStoryControl(bible: StoryBible, sourceHash: s
 
   const narrativeExposureRules: NarrativeExposureRules = {
     prohibitedTopicsUntilChapter: [
-      { topic: 'Bí mật tối thượng về nguồn gốc đại lục', unlockChapter: Math.floor(totalChapters * 0.6) },
-      { topic: 'Sự thật về các vị thần cổ đại', unlockChapter: Math.floor(totalChapters * 0.75) }
+      { topic: 'Bí mật về nguồn gốc xung đột trung tâm', unlockChapter: Math.floor(totalChapters * 0.6) },
+      { topic: 'Sự thật về biến cố nền tảng trong lịch sử', unlockChapter: Math.floor(totalChapters * 0.75) }
     ],
     foreshadowingDirectives: [
-      { hint: 'Gợi ý nhẹ nhàng về sự mất cân bằng linh khí', plantArcId: 'arc_1', payoffArcId: 'arc_3' }
+      { hint: 'Gợi ý nhẹ nhàng về một bất thường chưa được giải thích', plantArcId: 'arc_1', payoffArcId: 'arc_3' }
     ],
     mandatoryKnowledgeByChapter: []
   };
@@ -404,6 +404,8 @@ export function createInitialStoryState(
   });
 
   return {
+    schemaVersion: STORY_STATE_SCHEMA_VERSION,
+    sourceHash: control.sourceHash,
     currentChapter,
     characterStates: {},
     relationships: [],
@@ -416,6 +418,10 @@ export function createInitialStoryState(
     currentArcProgress: arcProgress,
     unlockedCharacterIds: Array.from(unlockedCharacterIds),
     worldFactStates,
-    activeFactions: []
+    activeFactions: [],
+    knowledgeLedger: [],
+    timeline: [],
+    continuitySummary: '',
+    consequences: []
   };
 }

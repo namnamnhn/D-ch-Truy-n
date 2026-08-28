@@ -209,7 +209,7 @@ export function validateDeterministicBatchOutput(
 
   const activeInjuries = Object.values(state.characterStates || {}).flatMap(characterState =>
     (characterState.injuries || [])
-      .filter(injury => injury.expectedRecoveryChapter > batchPlan.startChapter
+      .filter(injury => injury.status !== 'recovered'
         && (injury.severity === 'severe' || injury.severity === 'critical'))
       .map(injury => ({ name: characterState.name, injury }))
   );
@@ -223,7 +223,7 @@ export function validateDeterministicBatchOutput(
       if (combat.test(content) && !/(?:vết thương|đau)/iu.test(content)) {
         violations.push(deterministicViolation({
           type: 'INJURY_AMNESIA', severity: 'HIGH', chapterNumber,
-          message: `A severe active injury is ignored before recovery chapter ${injury.expectedRecoveryChapter}.`,
+          message: `A severe injury is still active; recovery chapter ${injury.expectedRecoveryChapter} was only an expectation.`,
           relatedCharacter: name,
           suggestedRepair: 'Show the movement restriction, pain, tactical limitation, or credible cost.'
         }));

@@ -16,3 +16,6 @@ export * from './pipeline';
 export * from './blueprintParser';
 export * from './runtimeValidation';
 export * from './setupImport';
+export * from './modelRouting';
+export * from './characterMerge';
+export * from './sanity';

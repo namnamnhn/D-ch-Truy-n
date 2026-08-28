@@ -13,7 +13,9 @@ import {
   ValidationResult,
   Violation,
   ViolationType,
-  STORY_VIOLATION_TYPES
+  STORY_VIOLATION_TYPES,
+  STORY_STATE_SCHEMA_VERSION,
+  MEMORY_SCHEMA_VERSION
 } from './types';
 import { createStoryControlFromBlueprint, validateBlueprintV3Object } from './blueprintParser';
 import {
@@ -142,9 +144,17 @@ function normalizeChapters(value: unknown): CreativeChapter[] | undefined {
   return chapters;
 }
 
-function normalizeMemoryIndex(value: unknown): ChapterMemory[] | undefined {
+function normalizeMemoryIndex(value: unknown, sourceHash?: string): ChapterMemory[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  return value.filter(isRecord).map(entry => ({
+  if (!sourceHash) return undefined;
+  return value.filter(isRecord).filter(entry =>
+    (entry.schemaVersion === undefined || entry.schemaVersion === MEMORY_SCHEMA_VERSION)
+    && (entry.sourceHash === undefined || entry.sourceHash === sourceHash)).map(entry => ({
+    id: normalizeText(entry.id) || `memory_${normalizePositiveInteger(entry.chapterNumber) || 1}`,
+    schemaVersion: MEMORY_SCHEMA_VERSION,
+    sourceHash,
+    chapterStart: normalizePositiveInteger(entry.chapterStart) || normalizePositiveInteger(entry.chapterNumber) || 1,
+    chapterEnd: normalizePositiveInteger(entry.chapterEnd) || normalizePositiveInteger(entry.chapterNumber) || 1,
     chapterNumber: normalizePositiveInteger(entry.chapterNumber) || 1,
     title: normalizeText(entry.title) || '',
     summary: normalizeText(entry.summary) || '',
@@ -154,7 +164,19 @@ function normalizeMemoryIndex(value: unknown): ChapterMemory[] | undefined {
     relationshipChanges: normalizeStringArray(entry.relationshipChanges),
     injuries: normalizeStringArray(entry.injuries),
     resources: normalizeStringArray(entry.resources),
-    longTermSeeds: normalizeStringArray(entry.longTermSeeds)
+    longTermSeeds: normalizeStringArray(entry.longTermSeeds),
+    arcId: normalizeText(entry.arcId) || undefined,
+    characterIds: normalizeStringArray(entry.characterIds),
+    threadIds: normalizeStringArray(entry.threadIds),
+    factIds: normalizeStringArray(entry.factIds),
+    seedIds: normalizeStringArray(entry.seedIds),
+    injuryIds: normalizeStringArray(entry.injuryIds),
+    relationshipIds: normalizeStringArray(entry.relationshipIds),
+    consequenceIds: normalizeStringArray(entry.consequenceIds),
+    importance: typeof entry.importance === 'number' && Number.isFinite(entry.importance) ? entry.importance : 50,
+    resolved: entry.resolved === true,
+    irreversible: entry.irreversible === true,
+    order: normalizePositiveInteger(entry.order) || normalizePositiveInteger(entry.chapterNumber) || 1
   }));
 }
 
@@ -176,7 +198,11 @@ function normalizeImportedCharacterStates(value: unknown): Record<string, Charac
         severity,
         receivedChapter: normalizePositiveInteger(injury.receivedChapter) || 1,
         expectedRecoveryChapter: normalizePositiveInteger(injury.expectedRecoveryChapter) || 1,
-        restrictions: normalizeStringArray(injury.restrictions)
+        restrictions: normalizeStringArray(injury.restrictions),
+        status: injury.status === 'improving' || injury.status === 'worsening' || injury.status === 'recovered'
+          || injury.status === 'permanent' ? injury.status : 'active',
+        id: normalizeText(injury.id) || undefined,
+        resolvedChapter: normalizePositiveInteger(injury.resolvedChapter) || undefined
       };
     }) : [];
     states[key] = {
@@ -214,7 +240,7 @@ function normalizeImportedClues(value: unknown): StoryClue[] {
     discoveredChapter: normalizePositiveInteger(entry.discoveredChapter) || 1,
     discoveredBy: normalizeText(entry.discoveredBy) || '',
     knownInterpretations: normalizeStringArray(entry.knownInterpretations),
-    actualTruthHidden: normalizeText(entry.actualTruthHidden) || '',
+    actualTruthHidden: '',
     resolved: entry.resolved === true
   })).filter(clue => clue.clue);
 }
@@ -234,11 +260,16 @@ function normalizeImportedSeeds(value: unknown): LongTermSeed[] {
   }).filter(seed => seed.meaningHidden);
 }
 
-function normalizeStoryState(value: unknown): StoryState | undefined {
+function normalizeStoryState(value: unknown, sourceHash?: string): StoryState | undefined {
   if (!isRecord(value)) return undefined;
+  if (!sourceHash) return undefined;
+  if (value.schemaVersion !== undefined && value.schemaVersion !== STORY_STATE_SCHEMA_VERSION) return undefined;
+  if (value.sourceHash !== undefined && value.sourceHash !== sourceHash) return undefined;
   const currentChapter = typeof value.currentChapter === 'number' && Number.isInteger(value.currentChapter) && value.currentChapter >= 0
     ? value.currentChapter : 0;
   return {
+    schemaVersion: STORY_STATE_SCHEMA_VERSION,
+    sourceHash,
     currentChapter,
     characterStates: normalizeImportedCharacterStates(value.characterStates),
     relationships: normalizeImportedRelationships(value.relationships),
@@ -259,7 +290,36 @@ function normalizeStoryState(value: unknown): StoryState | undefined {
       ? Object.fromEntries(Object.entries(value.worldFactStates).filter((entry): entry is [string, 'hidden' | 'foreshadowed' | 'revealed'] =>
           entry[1] === 'hidden' || entry[1] === 'foreshadowed' || entry[1] === 'revealed'))
       : {},
-    activeFactions: normalizeStringArray(value.activeFactions)
+    activeFactions: normalizeStringArray(value.activeFactions),
+    knowledgeLedger: Array.isArray(value.knowledgeLedger) ? value.knowledgeLedger.filter(isRecord).map(entry => ({
+      factId: normalizeText(entry.factId) || '',
+      fact: normalizeText(entry.fact) || normalizeText(entry.interpretation) || '',
+      characterId: normalizeText(entry.characterId) || undefined,
+      learnedChapter: normalizePositiveInteger(entry.learnedChapter) || currentChapter || 1,
+      source: normalizeText(entry.source) || 'unknown',
+      confidence: typeof entry.confidence === 'number' && Number.isFinite(entry.confidence)
+        ? Math.max(0, Math.min(1, entry.confidence)) : 0.5,
+      interpretation: normalizeText(entry.interpretation) || undefined,
+      status: (entry.status === 'questioned' || entry.status === 'retracted' || entry.status === 'confirmed'
+        ? entry.status : 'believed') as 'believed' | 'questioned' | 'retracted' | 'confirmed'
+    })).filter(entry => entry.factId && entry.fact) : [],
+    timeline: Array.isArray(value.timeline) ? value.timeline.filter(isRecord).map(entry => ({
+      chapter: normalizePositiveInteger(entry.chapter) || currentChapter || 1,
+      marker: normalizeText(entry.marker) || '',
+      relativeChronology: normalizeText(entry.relativeChronology) || undefined,
+      location: normalizeText(entry.location) || undefined,
+      previousLocation: normalizeText(entry.previousLocation) || undefined,
+      event: normalizeText(entry.event) || undefined
+    })).filter(entry => entry.marker) : [],
+    continuitySummary: normalizeText(value.continuitySummary) || undefined,
+    consequences: Array.isArray(value.consequences) ? value.consequences.filter(isRecord).map((entry, index) => ({
+      id: normalizeText(entry.id) || `consequence_${index + 1}`,
+      type: normalizeText(entry.type) || 'consequence',
+      description: normalizeText(entry.description) || '',
+      createdChapter: normalizePositiveInteger(entry.createdChapter) || currentChapter || 1,
+      status: entry.status === 'resolved' ? 'resolved' as const : 'active' as const,
+      resolvedChapter: normalizePositiveInteger(entry.resolvedChapter) || undefined
+    })).filter(entry => entry.description) : []
   };
 }
 
@@ -361,8 +421,8 @@ function parseDirectJson(text: string): ParsedSetupFile | null {
     storyEngineSettingsV3: normalizeJsonObject(object.storyEngineSettingsV3) || normalizeJsonObject(object.settingsV3) || undefined,
     blueprintV3: effectiveBlueprint,
     storyControl,
-    storyState: fullProject ? normalizeStoryState(object.storyState) : undefined,
-    memoryIndex: fullProject ? normalizeMemoryIndex(object.memoryIndex) : undefined,
+    storyState: fullProject ? normalizeStoryState(object.storyState, storyControl?.sourceHash) : undefined,
+    memoryIndex: fullProject ? normalizeMemoryIndex(object.memoryIndex, storyControl?.sourceHash) : undefined,
     chapters: fullProject ? normalizeChapters(object.chapters) : undefined,
     lastValidationResult: fullProject ? normalizeValidationResult(object.lastValidationResult) : undefined
   };
@@ -411,8 +471,8 @@ export function parseSetupFileContent(text: string): ParsedSetupFile | null {
       continuitySummary: normalizeText(meta.continuitySummary) || premise,
       blueprintV3: legacyControl?.authoritativeBlueprint,
       storyControl: legacyControl,
-      storyState: normalizeStoryState(meta.storyState),
-      memoryIndex: normalizeMemoryIndex(meta.memoryIndex),
+      storyState: normalizeStoryState(meta.storyState, legacyControl?.sourceHash),
+      memoryIndex: normalizeMemoryIndex(meta.memoryIndex, legacyControl?.sourceHash),
       chapters: normalizeChapters(meta.chapters),
       lastValidationResult: normalizeValidationResult(meta.lastValidationResult)
     };
@@ -450,7 +510,8 @@ export function applySetupImport(previous: CreativeState, parsed: ParsedSetupFil
     seriesPremise: parsed.seriesPremise || parsed.premise,
     continuitySummary: parsed.continuitySummary || parsed.premise,
     storyEngineSettingsV3: parsed.storyEngineSettingsV3,
-    blueprintV3: parsed.blueprintV3
+    blueprintV3: parsed.blueprintV3,
+    storyEngineSanity: undefined
   };
   if (parsed.importKind === 'FULL_PROJECT') {
     return {

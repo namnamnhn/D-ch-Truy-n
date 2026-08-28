@@ -6,7 +6,12 @@ import {
     runStoryEnginePipeline,
     compileStoryControl,
     StoryBible,
-    PipelineProgressInfo
+    PipelineProgressInfo,
+    getStoryModelCandidates,
+    mergeExtractedCharacters,
+    runStoryEngineSanityCheck,
+    canReuseDerivedState,
+    compatibleMemories
 } from '../../services/storyEngine';
 
 export type EngineProgressInfo = PipelineProgressInfo;
@@ -92,7 +97,7 @@ export const useCreativePage = ({
     const worldNotes = setup.worldNotes || '';
     const charNotes = setup.charNotes || '';
     const outline = setup.outline || '';
-    const genre = setup.genre || 'Tiên Hiệp';
+    const genre = setup.genre || '';
 
     // Auto-migrate premise if seriesPremise or continuitySummary are not set
     useEffect(() => {
@@ -122,7 +127,7 @@ export const useCreativePage = ({
         try {
             const ai = getAiClient();
             const res = await smartExecution(
-                ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3-flash-preview', 'gemini-3.5-flash-lite'],
+                [...getStoryModelCandidates('PLANNER', IS_LITE)],
                 async (modelId) => {
                     const r = await ai.models.generateContent({
                         model: modelId,
@@ -133,7 +138,7 @@ Hãy phát triển và điền vào các mục sau. Trả về đúng định d�
   "title": "Tên truyện đề xuất",
   "genre": "Thể loại chính (Tiên Hiệp, Huyền Huyễn, Đô Thị...)",
   "premise": "Tóm tắt ý tưởng cốt truyện (Premise)",
-  "worldNotes": "Bối cảnh thế giới/Hệ thống tu luyện",
+  "worldNotes": "Bối cảnh, quy tắc và chi tiết thế giới do người dùng cung cấp",
   "charNotes": "Ghi chú nhân vật chung",
   "characters": [
     { "name": "Tên", "gender": "Nam/Nữ", "age": "Tuổi", "role": "Vai trò", "appearance": "Ngoại hình", "personality": "Tính cách" }
@@ -202,7 +207,7 @@ Hãy phát triển và điền vào các mục sau. Trả về đúng định d�
 
             const ai = getAiClient();
             const response = await smartExecution(
-                ['gemini-3.5-flash', 'gemini-3-flash-preview', 'gemini-3.0-flash'],
+                [...getStoryModelCandidates('PLANNER', IS_LITE)],
                 async (modelId) => {
                     const r = await ai.models.generateContent({
                         model: modelId,
@@ -211,7 +216,7 @@ Trả về định dạng JSON (không có markdown):
 {
   "genre": "Thể loại theo đánh giá của bạn (Tiên hiệp, kỳ ảo, hiện đại...)",
   "premise": "Tóm tắt mạch truyện tới thời điểm hiện tại.",
-  "worldNotes": "Hệ thống tu luyện, bối cảnh thế giới hiện có.",
+  "worldNotes": "Quy tắc và bối cảnh thế giới hiện có.",
   "charNotes": "Ghi chú nhân vật chung",
   "characters": [
     { "name": "Tên", "gender": "Nam/Nữ", "age": "Tuổi", "role": "Vai trò", "appearance": "Ngoại hình", "personality": "Tính cách" }
@@ -268,7 +273,7 @@ ${textContent}`,
             const ai = getAiClient();
             const bible: StoryBible = {
                 seedTitle: seedTitle || storyInfo?.title || 'Tác phẩm mới',
-                genre: genre || 'Tiên Hiệp',
+                genre: genre || 'Chưa chọn',
                 seriesPremise: state.seriesPremise || premise || 'Chưa có tiền đề',
                 continuitySummary: state.continuitySummary || premise || '',
                 worldNotes: worldNotes || '',
@@ -282,7 +287,7 @@ ${textContent}`,
 
             const compiled = await compileStoryControl(bible, async (prompt) => {
                 return smartExecution(
-                    ['gemini-3.5-flash', 'gemini-3-flash-preview', 'gemini-3.0-flash'],
+                    [...getStoryModelCandidates('STORY_CONTROL_COMPILER', IS_LITE)],
                     async (modelId) => {
                         const r = await ai.models.generateContent({
                             model: modelId,
@@ -295,8 +300,22 @@ ${textContent}`,
                 );
             });
 
-            setState(prev => ({ ...prev, storyControl: compiled }));
-            addToast(`Story Engine sẵn sàng! Đã xác lập ${compiled.arcs.length} Arc, ${compiled.characterGates.length} Character Gate, ${compiled.spoilerGates.length} Spoiler Gate.`, 'success');
+            const compatibleState = canReuseDerivedState(state.storyState, compiled.sourceHash) ? state.storyState : undefined;
+            const reusableMemories = compatibleMemories(state.memoryIndex, compiled.sourceHash);
+            const sanity = runStoryEngineSanityCheck({
+                bible,
+                control: compiled,
+                state: compatibleState,
+                memories: reusableMemories,
+                chapter: (state.chapters?.length || 0) + 1,
+                modelAvailability: { FAST: true, QUALITY: !IS_LITE },
+                strict: true
+            });
+            setState(prev => ({ ...prev, storyControl: compiled, storyState: compatibleState,
+                memoryIndex: reusableMemories, storyEngineSanity: sanity }));
+            addToast(sanity.pass
+                ? `Story Engine READY: ${compiled.arcs.length} Arc đã được kiểm tra.`
+                : `Story Engine BLOCKED: ${sanity.errors.join(' ')}`, sanity.pass ? 'success' : 'error');
             addLog?.(`[Story Engine] Sẵn sàng cho 600 chương: ${compiled.arcs.map(a => `${a.title} (${a.startChapter}-${a.endChapter})`).join(' -> ')}`, 'success');
         } catch (err: any) {
             addToast(`Lỗi kiểm tra Story Engine: ${err.message}`, 'error');
@@ -310,6 +329,12 @@ ${textContent}`,
      * Sáng tác chương mới với Long-Form Story Engine Pipeline V3
      */
     const handleGenerateCreativeChapters = async () => {
+        if (!state.storyEngineSanity?.pass) {
+            addToast(state.storyEngineSanity
+                ? `Story Engine BLOCKED: ${state.storyEngineSanity.errors.join(' ')}`
+                : 'Hãy chạy Kiểm Tra Engine và đạt READY trước khi bắt đầu.', 'error');
+            return;
+        }
         setIsGenerating(true);
         setEngineProgress({ stage: 'planning', message: 'Khởi động Long-Form Story Engine V3...', progress: 5 });
         if (setStartTime) setStartTime(Date.now());
@@ -324,7 +349,7 @@ ${textContent}`,
 
             const bible: StoryBible = {
                 seedTitle: seedTitle || storyInfo?.title || 'Tác phẩm mới',
-                genre: genre || 'Tiên Hiệp',
+                genre: genre || 'Chưa chọn',
                 seriesPremise: state.seriesPremise || premise || 'Chưa có tiền đề',
                 continuitySummary: state.continuitySummary || premise || '',
                 worldNotes: worldNotes || '',
@@ -354,7 +379,7 @@ ${textContent}`,
 
             const fastRunner = async (prompt: string, sys?: string) => {
                 return smartExecution(
-                    ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3-flash-preview', 'gemini-3.5-flash-lite'],
+                    [...getStoryModelCandidates('STATE_EXTRACTOR', IS_LITE)],
                     async (modelId) => {
                         const r = await ai.models.generateContent({
                             model: modelId,
@@ -372,9 +397,7 @@ ${textContent}`,
                 );
             };
 
-            const proCandidates = IS_LITE
-                ? ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash']
-                : ['gemini-3.1-pro-preview', 'gemini-3.7-flash', 'gemini-3.6-flash'];
+            const proCandidates = [...getStoryModelCandidates('WRITER', IS_LITE)];
 
             const proRunner = async (prompt: string, sys?: string) => {
                 return smartExecution(
@@ -397,6 +420,26 @@ ${textContent}`,
                 );
             };
 
+            const semanticRunner = async (prompt: string, sys?: string) => {
+                return smartExecution(
+                    [...getStoryModelCandidates('STORY_VALIDATOR_SEMANTIC', IS_LITE)],
+                    async (modelId) => {
+                        const r = await ai.models.generateContent({
+                            model: modelId,
+                            contents: prompt,
+                            config: {
+                                systemInstruction: sys,
+                                safetySettings: SAFETY_SETTINGS,
+                                temperature: 0.1,
+                                abortSignal: controller.signal
+                            }
+                        });
+                        return r.text || '';
+                    },
+                    'Strict Semantic QA', addLog
+                );
+            };
+
             const result = await runStoryEnginePipeline({
                 bible,
                 existingControl: state.storyControl,
@@ -405,7 +448,8 @@ ${textContent}`,
                 existingChapters: state.chapters || [],
                 batchSize,
                 aiFastRunner: fastRunner,
-                aiProRunner: proRunner,
+                aiProRunner: IS_LITE ? undefined : proRunner,
+                aiSemanticRunner: IS_LITE ? undefined : semanticRunner,
                 onProgress: (info, progressPercent) => {
                     if (typeof info === 'string') {
                         setEngineProgress({
@@ -443,11 +487,12 @@ ${textContent}`,
             setState(prev => ({
                 ...prev,
                 chapters: [...(prev.chapters || []), ...result.acceptedChapters],
-                characters: result.newCharacters,
+                characters: mergeExtractedCharacters(prev.characters, result.newCharacters, result.nextControl,
+                    result.nextState.currentChapter),
                 storyControl: result.nextControl,
                 storyState: result.nextState,
                 continuitySummary: result.updatedContinuitySummary,
-                memoryIndex: [...(prev.memoryIndex || []), ...result.newMemories],
+                memoryIndex: result.nextMemories,
                 lastValidationResult: result.validationResult,
                 snapshots: pushSnapshot(prev.snapshots)
             }));
@@ -571,9 +616,10 @@ ${textContent}`,
             characters: target.characters,
             seriesPremise: target.seriesPremise || prev.seriesPremise,
             continuitySummary: target.continuitySummary || target.premise,
-            storyControl: target.storyControl || prev.storyControl,
-            storyState: target.storyState || prev.storyState,
-            memoryIndex: target.memoryIndex || prev.memoryIndex,
+            storyControl: target.storyControl,
+            storyState: target.storyState,
+            memoryIndex: target.memoryIndex,
+            storyEngineSanity: undefined,
             snapshots: snapshots.slice(0, idx)
         }));
         setSetup({ premise: target.continuitySummary || target.premise });

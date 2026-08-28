@@ -1,6 +1,8 @@
 import { Character } from '../../types';
 
 export const STORY_CONTROL_SCHEMA_VERSION = 3;
+export const STORY_STATE_SCHEMA_VERSION = 2;
+export const MEMORY_SCHEMA_VERSION = 2;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -213,12 +215,15 @@ export interface StoryControl {
 // 3. STORY STATE (Trạng thái động qua từng chương)
 // ----------------------------------------------------
 export interface CharacterInjury {
+  id?: string;
   type: string;
   bodyPart: string;
   severity: 'mild' | 'moderate' | 'severe' | 'critical';
   receivedChapter: number;
   expectedRecoveryChapter: number;
   restrictions: string[];
+  status?: 'active' | 'improving' | 'worsening' | 'recovered' | 'permanent';
+  resolvedChapter?: number;
 }
 
 export interface CharacterState {
@@ -230,6 +235,39 @@ export interface CharacterState {
   knownFacts: string[];
   goals: string[];
   activeFaction?: string;
+  priorLocation?: string;
+  lastLocationChangeChapter?: number;
+}
+
+export type KnowledgeSource = 'witnessed' | 'told_by' | 'document' | 'inference' | 'rumor' | 'unknown' | string;
+
+export interface KnowledgeEntry {
+  factId: string;
+  fact: string;
+  characterId?: string;
+  learnedChapter: number;
+  source: KnowledgeSource;
+  confidence: number;
+  interpretation?: string;
+  status?: 'believed' | 'questioned' | 'retracted' | 'confirmed';
+}
+
+export interface TimelineMarker {
+  chapter: number;
+  marker: string;
+  relativeChronology?: string;
+  location?: string;
+  previousLocation?: string;
+  event?: string;
+}
+
+export interface StoryConsequence {
+  id: string;
+  type: 'debt' | 'promise' | 'favor' | 'consequence' | string;
+  description: string;
+  createdChapter: number;
+  status: 'active' | 'resolved';
+  resolvedChapter?: number;
 }
 
 export interface StoryRelationship {
@@ -261,6 +299,8 @@ export interface LongTermSeed {
 }
 
 export interface StoryState {
+  schemaVersion?: typeof STORY_STATE_SCHEMA_VERSION;
+  sourceHash?: string;
   currentChapter: number;
   characterStates: Record<string, CharacterState>;
   relationships: StoryRelationship[];
@@ -280,6 +320,10 @@ export interface StoryState {
   unlockedCharacterIds: string[];
   worldFactStates: Record<string, 'hidden' | 'foreshadowed' | 'revealed'>;
   activeFactions?: string[];
+  knowledgeLedger?: KnowledgeEntry[];
+  timeline?: TimelineMarker[];
+  continuitySummary?: string;
+  consequences?: StoryConsequence[];
 }
 
 // ----------------------------------------------------
@@ -360,6 +404,55 @@ export interface StoryEngineSanityInfo {
   lockedWorldFacts: string[];
   activeExposureRuleIds: string[];
   mysteryStageIds: string[];
+}
+
+export type StoryModelRole =
+  | 'STORY_CONTROL_COMPILER'
+  | 'PLANNER'
+  | 'PLAN_VALIDATOR_SEMANTIC'
+  | 'WRITER'
+  | 'STATE_EXTRACTOR'
+  | 'MEMORY_COMPACTOR'
+  | 'STORY_VALIDATOR_SEMANTIC'
+  | 'AUTO_REPAIR';
+
+export type StoryModelTier = 'FAST' | 'QUALITY';
+
+export interface StoryModelRoute {
+  role: StoryModelRole;
+  tier: StoryModelTier;
+  requiredInStrictMode: boolean;
+  allowFastFallback: boolean;
+  status: 'available' | 'unavailable' | 'unknown';
+}
+
+export interface SanityCheckResult {
+  schemaVersion: number;
+  sourceHash: string;
+  chapter: number;
+  settingsLoaded: boolean;
+  blueprintLoaded: boolean;
+  arcCount: number;
+  exactArcCoverage: boolean;
+  characterRegistryCount: number;
+  activeCharacterCount: number;
+  lockedCharacterCount: number;
+  worldFactCount: number;
+  activeWorldFactCount: number;
+  lockedWorldFactCount: number;
+  authorOnlyWorldFactCount: number;
+  activeExposureRuleIds: string[];
+  readerKnowledgeCeiling: string[];
+  activeMysteryStageIds: string[];
+  storyStateLoaded: boolean;
+  memoryEntryCount: number;
+  knowledgeEntryCount: number;
+  modelRoutingRoles: StoryModelRoute[];
+  writerContextLeakCheck: boolean;
+  plannerContextLeakCheck: boolean;
+  errors: string[];
+  warnings: string[];
+  pass: boolean;
 }
 
 // ----------------------------------------------------
@@ -447,6 +540,11 @@ export type ValidationResult = StoryValidationResult;
 // ----------------------------------------------------
 export interface ChapterMemory {
   chapterNumber: number;
+  id?: string;
+  schemaVersion?: typeof MEMORY_SCHEMA_VERSION;
+  sourceHash?: string;
+  chapterStart?: number;
+  chapterEnd?: number;
   title: string;
   summary: string;
   charactersInvolved: string[];
@@ -456,4 +554,16 @@ export interface ChapterMemory {
   injuries?: string[];
   resources?: string[];
   longTermSeeds?: string[];
+  arcId?: string;
+  characterIds?: string[];
+  threadIds?: string[];
+  factIds?: string[];
+  seedIds?: string[];
+  injuryIds?: string[];
+  relationshipIds?: string[];
+  consequenceIds?: string[];
+  importance?: number;
+  resolved?: boolean;
+  irreversible?: boolean;
+  order?: number;
 }
