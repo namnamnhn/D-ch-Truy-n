@@ -1,0 +1,8 @@
+{
+  "name": "Remix Remix Dịch \u0026 Biên Tập Truyện AI v11.6.2 (6 Tháng)",
+  "description": "Long-Form Story Engine v3: Vận hành tiểu thuyết dài tập ~600 chương ổn định. Hỗ trợ One-File Setup import/export, 38 Arc Structure, Character & Spoiler Gating, Context Projections, Semantic QA Validator (Fail-Closed) và Auto-Repair.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
