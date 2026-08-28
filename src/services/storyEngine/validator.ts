@@ -15,6 +15,7 @@ import { getCharacterAccess, projectExposureRules, projectWorldFactsForChapter }
 import {
   canonicalizeStoryValidation,
   makeStoryViolation,
+  qaUnavailableResult,
   runSemanticValidation,
   SemanticRunner
 } from './semanticValidator';
@@ -265,12 +266,16 @@ export async function validateBatchOutput(
   runner?: SemanticRunner,
   priorChapters: CreativeChapter[] = []
 ): Promise<StoryValidationResult> {
-  const deterministic = validateDeterministicBatchOutput(chapters, batchPlan, control, state, bible);
-  const prompt = buildValidatorContext(control, batchPlan, state, batchPlan.startChapter, chapters, priorChapters);
-  const semantic = await runSemanticValidation(prompt, runner, {
-    maxAttempts: 2,
-    timeoutMs: configuredNumber(control, 'semanticQaTimeoutMs'),
-    strictLowSeverity: configuredBoolean(control, 'strictLowSeverity')
-  });
-  return mergeValidationLayers(deterministic, semantic, control);
+  try {
+    const deterministic = validateDeterministicBatchOutput(chapters, batchPlan, control, state, bible);
+    const prompt = buildValidatorContext(control, batchPlan, state, batchPlan.startChapter, chapters, priorChapters);
+    const semantic = await runSemanticValidation(prompt, runner, {
+      maxAttempts: 2,
+      timeoutMs: configuredNumber(control, 'semanticQaTimeoutMs'),
+      strictLowSeverity: configuredBoolean(control, 'strictLowSeverity')
+    });
+    return mergeValidationLayers(deterministic, semantic, control);
+  } catch {
+    return qaUnavailableResult(0, 'Story QA infrastructure failed before a trustworthy verdict was produced.');
+  }
 }

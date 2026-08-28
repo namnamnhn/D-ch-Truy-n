@@ -14,7 +14,10 @@ export const DEFAULT_SEMANTIC_TIMEOUT_MS = 60_000;
 export type SemanticRunner = (prompt: string, systemInstruction: string) => Promise<string>;
 
 const violationTypes = new Set<string>(STORY_VIOLATION_TYPES);
-const severities = new Set<StoryViolationSeverity>(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
+
+function isStoryViolationType(value: string): value is StoryViolationType {
+  return violationTypes.has(value);
+}
 
 interface ParsedSemanticResult {
   pass: boolean;
@@ -76,10 +79,13 @@ export function makeStoryViolation(input: {
 
 function parseViolation(value: unknown, context: string): StoryViolation {
   if (!isRecord(value)) throw new Error(`${context} must be an object.`);
-  if (typeof value.type !== 'string' || !violationTypes.has(value.type)) {
+  const canonicalType = normalizeText(value.type)?.toLocaleUpperCase('en-US');
+  if (!canonicalType || !isStoryViolationType(canonicalType)) {
     throw new Error(`${context}.type is not a supported StoryViolationType.`);
   }
-  if (typeof value.severity !== 'string' || !severities.has(value.severity as StoryViolationSeverity)) {
+  const canonicalSeverity = normalizeText(value.severity)?.toLocaleUpperCase('en-US');
+  if (canonicalSeverity !== 'LOW' && canonicalSeverity !== 'MEDIUM'
+    && canonicalSeverity !== 'HIGH' && canonicalSeverity !== 'CRITICAL') {
     throw new Error(`${context}.severity must be LOW, MEDIUM, HIGH, or CRITICAL.`);
   }
   const message = normalizeText(value.message);
@@ -96,8 +102,8 @@ function parseViolation(value: unknown, context: string): StoryViolation {
     throw new Error(`${context}.chapterNumber must be a positive integer when present.`);
   }
   return makeStoryViolation({
-    type: value.type as StoryViolationType,
-    severity: value.severity as StoryViolationSeverity,
+    type: canonicalType,
+    severity: canonicalSeverity,
     chapterNumber,
     message,
     evidence: optionalText('evidence'),
@@ -172,7 +178,13 @@ export function qaUnavailableResult(attempts: number, reason = 'Semantic story Q
     modelRole: SEMANTIC_VALIDATOR_MODEL_ROLE,
     continuityScore: 0,
     pacingScore: 0,
-    semanticChecks: semanticChecksFor([violation])
+    semanticChecks: {
+      characterGating: false,
+      worldFactContinuity: false,
+      spoilerContainment: false,
+      pacingIntegrity: false,
+      characterTraitConsistency: false
+    }
   };
 }
 

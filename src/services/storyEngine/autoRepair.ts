@@ -1,6 +1,7 @@
 import { CreativeChapter } from '../../types';
 import { BatchPlan, StoryControl, StoryViolation, StoryViolationType } from './types';
 import { validateWriterOutput } from './writer';
+import { getAllExposureRules, getWorldFactGateChapter } from './storyAccess';
 
 export interface SafeRepairViolation {
   type: StoryViolationType;
@@ -30,10 +31,16 @@ function hiddenStrings(control: StoryControl): Set<string> {
     }
   }
   for (const fact of control.worldFacts || []) {
-    if (fact.visibility === 'author_only' || fact.scope === 'hidden_truth') {
+    collectSecretStrings(fact.secretTruth, secrets);
+    if (fact.visibility !== 'always' || fact.scope !== 'public' || getWorldFactGateChapter(fact) > 1) {
       collectSecretStrings(fact.fact, secrets);
-      collectSecretStrings(fact.secretTruth, secrets);
     }
+  }
+  for (const gate of control.spoilerGates || []) collectSecretStrings(gate.description, secrets);
+  for (const arc of control.arcs || []) collectSecretStrings(arc.forbiddenSpoilers, secrets);
+  for (const rule of getAllExposureRules(control)) {
+    collectSecretStrings(rule.forbiddenEvidence, secrets);
+    collectSecretStrings(rule.forbiddenInferences, secrets);
   }
   return secrets;
 }
@@ -41,7 +48,10 @@ function hiddenStrings(control: StoryControl): Set<string> {
 function redact(text: string | undefined, secrets: Set<string>): string | undefined {
   if (!text) return undefined;
   let safe = text;
-  for (const secret of secrets) safe = safe.split(secret).join('[HIDDEN_DETAIL]');
+  for (const secret of [...secrets].sort((left, right) => right.length - left.length)) {
+    const escaped = secret.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    safe = safe.replace(new RegExp(escaped, 'giu'), '[HIDDEN_DETAIL]');
+  }
   return safe;
 }
 
@@ -103,8 +113,9 @@ export function buildRepairPrompt(
   writerContext: string,
   control: StoryControl
 ): string {
+  const secrets = hiddenStrings(control);
   const safeRequest = buildSafeRepairRequest(violations, control);
-  return `${writerContext}
+  const prompt = `${writerContext}
 
 [SAFE REPAIR REQUEST — FIX EVERY ITEM]
 ${JSON.stringify(safeRequest, null, 2)}
@@ -113,6 +124,7 @@ ${JSON.stringify(safeRequest, null, 2)}
 ${rejectedChapters.map(chapter => `=== ${chapter.title} ===\n${chapter.content}`).join('\n\n')}
 
 Rewrite the complete chapter. Preserve approved events and output only the required CHAPTER envelope.`;
+  return redact(prompt, secrets) || '';
 }
 
 export async function repairBatchOutput(
