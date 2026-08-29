@@ -45,11 +45,13 @@ Status: **PASS**.
 | P1-CRED-001 | PASS | DeepSeek owner secret remains server-side; optional BYOK remains memory/request-only. Legacy localStorage/session/auto-backup/downloaded-backup credential fields are purged or recursively sanitized without changing manuscript fields. |
 | P2-LOG-001 (credential scope) | PASS | One narrow credential redactor now protects global persisted logs, crash/unhandled-rejection paths, Story Engine diagnostics, and provider error normalization. Broader non-credential P2 log/content policy remains for WP-FIN-07. |
 
-Architecture evidence: `server/productionServer.ts` is bundled to `dist-server/productionServer.js`; `npm start` executes that artifact directly, binds `process.env.PORT` (safe default 8080), serves the React build with SPA fallback, and routes `/api/provider` to the existing `handleProviderGateway()` implementation. Production and Vite development instantiate the same `AuthSessionAuthority`; the provider adapter calls it on every request. There is no Origin/Referer/browser-secret/static-token authorization substitute.
+Architecture evidence: AI Studio's production build bundles `server/productionEntry.ts` with esbuild to the conventional `dist/server.cjs`; `npm start` executes that artifact directly, binds `process.env.PORT` (safe default 8080), emits `AI_STUDIO_RUNTIME_READY`, serves the React build with SPA fallback, and routes the same-origin auth and provider APIs ahead of static files. Production and Vite development instantiate the same `AuthSessionAuthority`; the provider adapter calls it on every request. There is no Origin/Referer/browser-secret/static-token authorization substitute.
 
 Automated evidence: thirteen provider-engine/security regressions and three production-server regressions remain passing. Sixteen WP-FIN-03 regressions cover login, missing configuration, rate limiting, the eight-hour maximum session TTL, forged/expired sessions, logout, provider gating, entitlement expiry, Full/Lite parity, and Vite development parity. `npm run test:production-server` performs login/status/authenticated-provider/logout/post-logout denial against built Node output. `npm run test:credential-build` scans 20 browser artifacts with zero provider/auth sentinel leaks and no legacy `PASSWORD_HASH` authority.
 
 #### Real Google AI Studio acceptance checklist
+
+- Before configuring secrets, confirm Preview logs contain `AI_STUDIO_RUNTIME_READY` and `GET /api/auth/status` returns app-owned JSON with `X-Application-Server: node-production`, never infrastructure HTML.
 
 - Configure `APP_ACCESS_CODE_HASH`, `SESSION_SIGNING_SECRET`, and `GEMINI_API_KEY` in **AI Studio Settings → Secrets**.
 - Confirm browser DevTools Sources cannot find the key and built browser artifacts contain no key.
@@ -79,7 +81,7 @@ WP-FIN-04 through WP-FIN-08 remain open. Whole-product release remains blocked.
 | --- | --- |
 | Full Vitest | PASS — 22 files, 380/380 tests |
 | TypeScript | PASS — `npx tsc --noEmit` |
-| Production build | PASS — React build plus `dist-server/productionServer.js`; 881.87 kB largest application chunk; existing >500 kB P2 warning remains |
+| Production build | PASS — React build plus `dist/server.cjs`; 881.87 kB largest application chunk; existing >500 kB P2 warning remains |
 | ESLint | Known debt improved — 9 errors, 27 warnings (baseline 10/27; no new debt) |
 | Full npm audit | PASS — 0 vulnerabilities (baseline: 1 critical, 2 high) |
 | Runtime npm audit | PASS — 0 vulnerabilities (baseline: 1 critical, 2 high) |

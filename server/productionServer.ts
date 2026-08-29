@@ -2,7 +2,6 @@ import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PROVIDER_GATEWAY_PATH } from '../shared/providerContract';
 import {
   AuthSessionAuthority,
@@ -15,8 +14,8 @@ import {
 } from './providerGateway';
 
 const DEFAULT_PORT = 8080;
-const DEFAULT_BUILD_DIRECTORY = fileURLToPath(new URL('../dist/', import.meta.url));
-const SERVER_ARTIFACT_NAME = path.basename(fileURLToPath(import.meta.url));
+const DEFAULT_BUILD_DIRECTORY = path.resolve(process.cwd(), 'dist');
+const SERVER_ARTIFACT_NAME = 'server.cjs';
 const CONTENT_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -124,7 +123,9 @@ export function createProductionServer(options: ProductionServerOptions = {}): S
 
   return createServer((request, response) => {
     const pathname = (request.url || '').split('?')[0];
-    if (pathname === PROVIDER_GATEWAY_PATH) response.setHeader('X-Application-Server', 'node-production');
+    if (isAuthPath(pathname) || pathname === PROVIDER_GATEWAY_PATH) {
+      response.setHeader('X-Application-Server', 'node-production');
+    }
     const operation = isAuthPath(pathname)
       ? handleAuthRequest(request, response)
       : pathname === PROVIDER_GATEWAY_PATH
@@ -144,10 +145,7 @@ export function startProductionServer(options: ProductionServerOptions = {}): Se
   server.listen(port, '0.0.0.0', () => {
     const address = server.address();
     const boundPort = typeof address === 'object' && address ? address.port : port;
-    console.log(`NODE_PRODUCTION_SERVER listening on http://0.0.0.0:${boundPort}`);
+    console.log(`AI_STUDIO_RUNTIME_READY http://0.0.0.0:${boundPort}`);
   });
   return server;
 }
-
-const entryPath = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : '';
-if (import.meta.url === entryPath) startProductionServer();

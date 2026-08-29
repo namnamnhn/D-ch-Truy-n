@@ -84,6 +84,22 @@ describe('WP-FIN-02 production Node server', () => {
     expect((await response.json() as ProviderErrorPayload).error.code).toBe('UNAUTHORIZED');
   });
 
+  it('marks auth JSON as application-owned and never serves the packaged server artifact', async () => {
+    const baseUrl = await start({ env: AUTH_ENV });
+
+    const statusResponse = await fetch(`${baseUrl}/api/auth/status`);
+    const serverArtifactResponse = await fetch(`${baseUrl}/server.cjs`);
+
+    expect(statusResponse.status).toBe(200);
+    expect(statusResponse.headers.get('content-type')).toContain('application/json');
+    expect(statusResponse.headers.get('x-application-server')).toBe('node-production');
+    expect(await statusResponse.json()).toMatchObject({
+      authenticated: false,
+      status: 'AUTH_REQUIRED',
+    });
+    expect(serverArtifactResponse.status).toBe(404);
+  });
+
   it('reports a missing server secret safely only after server-side authorization succeeds', async () => {
     const baseUrl = await start({ env: AUTH_ENV });
     const login = await fetch(`${baseUrl}/api/auth/login`, {

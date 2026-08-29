@@ -6,13 +6,13 @@ import net from 'node:net';
 import path from 'node:path';
 
 const root = process.cwd();
-const serverEntry = path.join(root, 'dist', 'server.mjs');
+const serverEntry = path.join(root, 'dist', 'server.cjs');
 const browserEntry = path.join(root, 'dist', 'index.html');
 const pdfAssets = path.join(root, 'dist', 'pdfjs-assets');
 await Promise.all([access(serverEntry), access(browserEntry), access(pdfAssets)]);
 
 const packageJson = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-if (packageJson.scripts?.start !== 'node dist/server.mjs') {
+if (packageJson.scripts?.start !== 'node dist/server.cjs') {
   throw new Error('The production start script does not execute the built Node server entry.');
 }
 
@@ -60,7 +60,7 @@ const startServer = async (env) => {
   await new Promise((resolve, reject) => {
     const deadline = setTimeout(() => reject(new Error(`Production server startup timed out.\n${output}`)), 15_000);
     const check = () => {
-      if (!output.includes('NODE_PRODUCTION_SERVER listening')) return;
+      if (!output.includes('AI_STUDIO_RUNTIME_READY')) return;
       clearTimeout(deadline);
       resolve();
     };
@@ -120,13 +120,14 @@ try {
   }
   const assetResponse = await fetch(`${configured.origin}/assets/${browserAsset}`);
   if (!assetResponse.ok) throw new Error('Built browser asset was not served by npm start.');
-  if ((await fetch(`${configured.origin}/server.mjs`)).status !== 404) {
+  if ((await fetch(`${configured.origin}/server.cjs`)).status !== 404) {
     throw new Error('The packaged Node runtime was exposed as a public static route.');
   }
 
   const initialStatus = await jsonRequest(`${configured.origin}/api/auth/status`);
   const initialStatusBody = assertJson(initialStatus, 'Initial /api/auth/status');
-  if (initialStatus.response.status !== 200 || initialStatusBody.status !== 'AUTH_REQUIRED') {
+  if (initialStatus.response.status !== 200 || initialStatusBody.status !== 'AUTH_REQUIRED'
+    || initialStatus.response.headers.get('x-application-server') !== 'node-production') {
     throw new Error(`Initial auth status failed: ${initialStatus.response.status} ${initialStatus.text}`);
   }
 
@@ -168,7 +169,7 @@ try {
     if (browserObservable.includes(secret)) throw new Error('A server authentication/provider secret appeared in browser-observable output.');
   }
   if (configured.output().includes('vite preview')) throw new Error('Production smoke unexpectedly depended on Vite preview.');
-  console.log('Production runtime smoke PASS: built dist/server.mjs via npm start; auth JSON, static files, provider boundary, and logout verified.');
+  console.log('Production runtime smoke PASS: built dist/server.cjs via npm start; auth JSON, static files, provider boundary, and logout verified.');
 } finally {
   await stopServer(configured.child);
 }
