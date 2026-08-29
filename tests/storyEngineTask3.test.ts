@@ -320,6 +320,7 @@ describe('Story Engine Task 3 - fail-closed repair pipeline', () => {
         return systemInstruction?.includes('Chapter Planner') ? plannerJson() : '{}';
       },
       aiProRunner: async (_prompt, systemInstruction) => {
+        if (systemInstruction.includes('semantic plan validator')) return semanticJson(true);
         if (systemInstruction.includes('semantic-validator')) {
           proSemanticCalls++;
           return semanticJson(true);
@@ -351,6 +352,7 @@ describe('Story Engine Task 3 - fail-closed repair pipeline', () => {
       bible, existingControl: makeControl(), existingState, existingChapters: [], batchSize: 1,
       aiFastRunner: async (_prompt, systemInstruction) => systemInstruction?.includes('Chapter Planner') ? plannerJson() : '{}',
       aiProRunner: async (_prompt, systemInstruction) => {
+        if (systemInstruction.includes('semantic plan validator')) return semanticJson(true);
         if (systemInstruction.includes('semantic-validator')) return semanticJson(false);
         if (systemInstruction.includes('repair writer')) repairCalls++;
         return xml();
@@ -369,6 +371,7 @@ describe('Story Engine Task 3 - fail-closed repair pipeline', () => {
       bible, existingControl: makeControl(), existingState: makeState(), existingChapters: [], batchSize: 1,
       aiFastRunner: async (_prompt, systemInstruction) => systemInstruction?.includes('Chapter Planner') ? plannerJson() : '{}',
       aiProRunner: async (_prompt, systemInstruction) => {
+        if (systemInstruction.includes('semantic plan validator')) return semanticJson(true);
         if (systemInstruction.includes('semantic-validator')) { semanticCalls++; return '{invalid'; }
         if (systemInstruction.includes('repair writer')) repairCalls++;
         return xml();
@@ -392,6 +395,7 @@ describe('Story Engine Task 3 - fail-closed repair pipeline', () => {
       bible, existingControl: makeControl(), existingState: makeState(), existingChapters: [], batchSize: 1,
       aiFastRunner: async (_prompt, systemInstruction) => systemInstruction?.includes('Chapter Planner') ? plannerJson() : '{}',
       aiProRunner: async (_prompt, systemInstruction) => {
+        if (systemInstruction.includes('semantic plan validator')) return semanticJson(true);
         if (systemInstruction.includes('semantic-validator')) return semanticResponses[semanticCalls++];
         if (systemInstruction.includes('repair writer')) { repairCalls++; return xml(`Safe repair ${repairCalls}.`); }
         return xml('Initial prose.');
@@ -413,6 +417,7 @@ describe('Story Engine Task 3 - fail-closed repair pipeline', () => {
       bible, existingControl: control, existingState: makeState(), existingChapters: [], batchSize: 1,
       aiFastRunner: async (_prompt, systemInstruction) => systemInstruction?.includes('Chapter Planner') ? plannerJson() : '{}',
       aiProRunner: async (_prompt, systemInstruction) => {
+        if (systemInstruction.includes('semantic plan validator')) return semanticJson(true);
         if (systemInstruction.includes('semantic-validator')) {
           semanticCalls++;
           return semanticCalls === 1 ? semanticJson(false, [mediumViolation()]) : semanticJson(true);
@@ -447,6 +452,7 @@ describe('Story Engine Task 3 - fail-closed repair pipeline', () => {
       aiFastRunner: async (_prompt, systemInstruction) => systemInstruction?.includes('Chapter Planner')
         ? JSON.stringify({ chapters: [chapterPlan(2)] }) : '{}',
       aiProRunner: async (_prompt, systemInstruction) => {
+        if (systemInstruction.includes('semantic plan validator')) return semanticJson(true);
         if (systemInstruction.includes('semantic-validator')) {
           semanticCalls++;
           return semanticJson(false, [{ ...mediumViolation(), chapterNumber: 2 }]);

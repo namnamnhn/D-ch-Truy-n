@@ -240,7 +240,8 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
     for (const chapter of requested) {
       plans.push(await generateBatchPlan(
         bible, control, currentState, currentMemories, chapter, 1, existingChapters,
-        (prompt, sys) => roleRunner('PLANNER')(prompt, sys)
+        (prompt, sys) => roleRunner('PLANNER')(prompt, sys),
+        aiProRunner ? (prompt, sys) => roleRunner('PLAN_VALIDATOR_SEMANTIC')(prompt, sys) : undefined
       ));
     }
     batchPlan = mergePlans(plans, requested);
@@ -261,7 +262,8 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
     for (const chapter of requested) {
       const chapterPlan = singleChapterPlan(batchPlan, chapter);
       const writerContext = buildWriterContext(
-        bible, control, chapterPlan, currentState, currentMemories, chapter, 1, existingChapters
+        bible, control, chapterPlan, currentState, currentMemories, chapter, 1,
+        [...existingChapters, ...generatedChapters]
       );
       writerContexts.set(chapter, writerContext);
       const result = await generateChaptersProse(writerContext, chapterPlan, (prompt, sys) => roleRunner('WRITER')(prompt, sys));

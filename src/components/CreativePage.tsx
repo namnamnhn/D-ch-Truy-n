@@ -155,7 +155,7 @@ export const CreativePage: React.FC<CreativePageProps> = (props) => {
                                             type="text"
                                             value={userPrompt}
                                             onChange={e => setUserPrompt(e.target.value)}
-                                            placeholder="Ví dụ: Truyện về một bác sĩ xuyên không về thế giới tu tiên làm lại từ đầu..."
+                                        placeholder="Ví dụ: Một nữ thầy thuốc điều tra vụ mất tích trong thành phố cảng hư cấu..."
                                             className="flex-1 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-5 py-3.5 text-[15px] focus:ring-2 focus:ring-amber-500/50 outline-none placeholder:text-slate-600 dark:text-slate-300 text-slate-800 dark:text-slate-200 transition-all font-medium"
                                             onKeyDown={e => e.key === 'Enter' && !isAnalyzing && handleAnalyzeNew()}
                                         />
@@ -199,7 +199,7 @@ export const CreativePage: React.FC<CreativePageProps> = (props) => {
                                         value={genre} 
                                         onChange={e => setSetup({genre: e.target.value})} 
                                         className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/50 focus:border-slate-300 dark:focus:border-slate-600 rounded-xl px-5 py-4 text-[15px] focus:ring-1 focus:ring-amber-500/50 outline-none text-slate-800 dark:text-slate-200 transition-all font-medium shadow-sm" 
-                                        placeholder="Ví dụ: Tiên Hiệp, Đô Thị, Hài Hước..."
+                                        placeholder="Ví dụ: Lịch Sử, Trinh Thám, Lãng Mạn..."
                                     />
                                     <div className="flex flex-wrap gap-2 mt-3">
                                         {["Tiên Hiệp", "Huyền Huyễn", "Đô Thị", "Kỳ Ảo", "Khoa Huyễn", "Trọng Sinh", "Xuyên Không", "Đồng Nhân", "Võng Du", "Linh Dị"].map(g => (
@@ -239,9 +239,9 @@ export const CreativePage: React.FC<CreativePageProps> = (props) => {
                         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 pl-14">
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-3 flex justify-between">
-                                    <span>Hệ thống bối cảnh & Tu luyện</span>
+                                    <span>Quy tắc bối cảnh & thế giới</span>
                                 </label>
-                                <textarea value={worldNotes} onChange={e => setSetup({worldNotes: e.target.value})} className="w-full h-96 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/50 focus:border-slate-300 dark:focus:border-slate-600 rounded-xl p-6 text-[15px] focus:ring-1 focus:ring-amber-500/50 outline-none resize-none custom-scrollbar scroll-smooth text-slate-800 dark:text-slate-200 leading-relaxed shadow-sm dark:bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjgiPgo8cmVjdCB3aWR0aD0iOCIgaGVpZ2h0PSI4IiBmaWxsPSIjMGYxNzJhIiAvPgo8cGF0aCBkPSJNMCAwTDggOFpNOCAwTDAgOFoiIHN0cm9rZT0iIzFlMjkzYiIHN0cm9rZS13aWR0aD0iMSIgLz4KPC9zdmc+')] dark:bg-repeat" placeholder="Ví dụ:&#10;- Trúc Cơ, Kim Đan, Nguyên Anh...&#10;- Bối cảnh thế giới chia làm 5 châu: Đông Thần, Nam Cương...&#10;- Khí cụ chia Thượng, Trung, Hạ phẩm..." />
+                                <textarea value={worldNotes} onChange={e => setSetup({worldNotes: e.target.value})} className="w-full h-96 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/50 focus:border-slate-300 dark:focus:border-slate-600 rounded-xl p-6 text-[15px] focus:ring-1 focus:ring-amber-500/50 outline-none resize-none custom-scrollbar scroll-smooth text-slate-800 dark:text-slate-200 leading-relaxed shadow-sm dark:bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjgiPgo8cmVjdCB3aWR0aD0iOCIgaGVpZ2h0PSI4IiBmaWxsPSIjMGYxNzJhIiAvPgo8cGF0aCBkPSJNMCAwTDggOFpNOCAwTDAgOFoiIHN0cm9rZT0iIzFlMjkzYiIHN0cm9rZS13aWR0aD0iMSIgLz4KPC9zdmc+')] dark:bg-repeat" placeholder="Ví dụ:&#10;- Địa lý, khí hậu và các khu dân cư.&#10;- Tổ chức xã hội, luật lệ và tập quán.&#10;- Công nghệ hoặc năng lực đặc biệt nếu thể loại yêu cầu." />
                             </div>
                             <div className="flex justify-between pt-8 pb-10 border-t border-slate-200 dark:border-slate-800 mt-8">
                                 <button onClick={() => setCurrentStep(1)} className="px-6 py-3.5 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-800 font-bold rounded-xl transition-all">
@@ -621,7 +621,7 @@ export const CreativePage: React.FC<CreativePageProps> = (props) => {
                                     <div className="sticky bottom-4 flex flex-wrap items-center justify-center gap-3 bg-white/95 dark:bg-slate-900/95 backdrop-blur border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xl p-4 mt-6">
                                         <button
                                             onClick={handleGenerateCreativeChapters}
-                                            disabled={isGenerating || (!premise || !outline)}
+                                            disabled={isGenerating || (!premise || !outline) || state.storyEngineSanity?.pass !== true}
                                             className="px-6 py-3 bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 text-slate-900 font-bold text-sm rounded-xl transition-all shadow-lg shadow-amber-600/20 flex items-center gap-2 disabled:opacity-50"
                                         >
                                             {isGenerating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}

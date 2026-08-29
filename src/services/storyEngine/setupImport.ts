@@ -516,7 +516,7 @@ export function applySetupImport(previous: CreativeState, parsed: ParsedSetupFil
   if (parsed.importKind === 'FULL_PROJECT') {
     return {
       ...common,
-      chapters: parsed.chapters || previous.chapters,
+      chapters: parsed.chapters || [],
       storyControl: parsed.storyControl,
       storyState: parsed.storyState,
       memoryIndex: parsed.memoryIndex,
@@ -525,6 +525,7 @@ export function applySetupImport(previous: CreativeState, parsed: ParsedSetupFil
   }
   return {
     ...common,
+    chapters: [],
     storyControl: parsed.storyControl,
     storyState: undefined,
     memoryIndex: undefined,

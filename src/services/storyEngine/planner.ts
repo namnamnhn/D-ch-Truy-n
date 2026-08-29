@@ -2,7 +2,7 @@ import { CreativeChapter } from '../../types';
 import { BatchPlan, ChapterMemory, ChapterPlan, StoryBible, StoryControl, StoryState } from './types';
 import { buildPlannerContext } from './contextBuilder';
 import { parseJsonObject, normalizePositiveInteger, normalizeStringArray, normalizeText } from './runtimeValidation';
-import { validateBatchPlan } from './planValidator';
+import { validateBatchPlan, validateBatchPlanSemantically } from './planValidator';
 import { getArcForChapter, getCharacterAccess } from './storyAccess';
 
 export const MAX_PLAN_ATTEMPTS = 3;
@@ -147,7 +147,8 @@ export async function generateBatchPlan(
   nextChapter: number,
   batchSize: number,
   recentChapters: CreativeChapter[],
-  runner: (prompt: string, sys: string) => Promise<string>
+  runner: (prompt: string, sys: string) => Promise<string>,
+  semanticRunner?: (prompt: string, sys: string) => Promise<string>
 ): Promise<BatchPlan> {
   const requestedChapterNumbers = Array.from({ length: batchSize }, (_, index) => nextChapter + index);
   const context = buildPlannerContext(bible, control, state, memoryIndex, nextChapter, batchSize, recentChapters);
@@ -163,7 +164,13 @@ Trả duy nhất JSON object có trường chapters. Không dùng markdown.${fee
       const raw = await runner(context, sys);
       const candidate = normalizeBatchPlan(raw, control, requestedChapterNumbers);
       const validation = validateBatchPlan(candidate, control, state, requestedChapterNumbers);
-      if (validation.valid) return validation.repairedPlan;
+      if (validation.valid) {
+        if (!semanticRunner) return validation.repairedPlan;
+        const semantic = await validateBatchPlanSemantically(validation.repairedPlan, control, state, semanticRunner);
+        if (semantic.valid) return validation.repairedPlan;
+        feedback = [semantic.error || 'SEMANTIC_PLAN_REJECTED'];
+        continue;
+      }
       feedback = validation.errors;
     } catch (error) {
       feedback = [error instanceof Error ? error.message : String(error)];

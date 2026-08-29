@@ -9,6 +9,7 @@ import {
   normalizeReference,
   projectExposureRules
 } from './storyAccess';
+import { parseJsonObject } from './runtimeValidation';
 
 export type PlanViolationCode =
   | 'PLAN_STRUCTURE'
@@ -38,6 +39,35 @@ export interface PlanValidationResult {
   errors: string[];
   violations: PlanViolation[];
   repairedPlan: BatchPlan;
+}
+
+export interface SemanticPlanValidationResult {
+  valid: boolean;
+  error?: string;
+}
+
+export async function validateBatchPlanSemantically(
+  plan: BatchPlan,
+  control: StoryControl,
+  state: StoryState,
+  runner: (prompt: string, systemInstruction: string) => Promise<string>
+): Promise<SemanticPlanValidationResult> {
+  const systemInstruction = `You are the Story Engine V3 semantic plan validator.
+Audit the approved ChapterPlan against the complete hidden StoryControl and StoryState.
+Reject contradictions, premature reveals/inferences, implausible continuity, character capability drift,
+future-arc leakage, or a plan that cannot satisfy the active mystery/exposure stage.
+Return only strict JSON: {"pass":true,"violations":[]}.
+violations must contain only short category labels, never hidden facts, answers, evidence, or explanations.`;
+  const prompt = `=== STORY ENGINE V3: INTERNAL PLAN VALIDATOR INPUT ===\n${JSON.stringify({ plan, control, state }, null, 2)}`;
+  const parsed = parseJsonObject(await runner(prompt, systemInstruction), 'Semantic Plan Validator output');
+  if (typeof parsed.pass !== 'boolean' || !Array.isArray(parsed.violations)
+    || parsed.violations.some(value => typeof value !== 'string')) {
+    throw new Error('Semantic Plan Validator output must contain boolean pass and string[] violations.');
+  }
+  if (parsed.pass !== true || parsed.violations.length > 0) {
+    return { valid: false, error: 'SEMANTIC_PLAN_REJECTED: revise the plan without exposing hidden validator context.' };
+  }
+  return { valid: true };
 }
 
 function explicitMatch(value: string, forbidden: string): boolean {

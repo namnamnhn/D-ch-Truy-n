@@ -1,7 +1,7 @@
 import { CreativeChapter } from '../../types';
 import { BatchPlan, StoryControl, StoryViolation, StoryViolationType } from './types';
 import { validateWriterOutput } from './writer';
-import { getAllExposureRules, getWorldFactGateChapter } from './storyAccess';
+import { getAllExposureRules, getCharacterAccess, getWorldFactGateChapter } from './storyAccess';
 
 export interface SafeRepairViolation {
   type: StoryViolationType;
@@ -23,8 +23,9 @@ function collectSecretStrings(value: unknown, output = new Set<string>()): Set<s
   return output;
 }
 
-function hiddenStrings(control: StoryControl): Set<string> {
+function hiddenStrings(control: StoryControl, chapters: number[] = []): Set<string> {
   const secrets = collectSecretStrings(control.authorOnlySecrets || []);
+  const targetChapter = chapters.length ? Math.max(...chapters) : undefined;
   for (const rawThread of control.mysteryThreads || []) {
     if (rawThread && typeof rawThread === 'object' && !Array.isArray(rawThread)) {
       collectSecretStrings((rawThread as Record<string, unknown>).actualTruth, secrets);
@@ -37,7 +38,33 @@ function hiddenStrings(control: StoryControl): Set<string> {
     }
   }
   for (const gate of control.spoilerGates || []) collectSecretStrings(gate.description, secrets);
-  for (const arc of control.arcs || []) collectSecretStrings(arc.forbiddenSpoilers, secrets);
+  for (const character of Object.values(control.characterRegistry || {})) {
+    if (targetChapter === undefined) {
+      collectSecretStrings(character.forbiddenSpoilers, secrets);
+      continue;
+    }
+    const access = getCharacterAccess(control, character, targetChapter);
+    if (!access.canMention) {
+      collectSecretStrings(character, secrets);
+    } else if (!access.canAppearDirectly) {
+      collectSecretStrings({
+        aliases: character.aliases,
+        aliasSet: character.aliasSet,
+        role: character.role,
+        gender: character.gender,
+        age: character.age,
+        appearance: character.appearance,
+        personality: character.personality,
+        coreMotivation: character.coreMotivation,
+        forbiddenSpoilers: character.forbiddenSpoilers,
+        restrictions: character.restrictions
+      }, secrets);
+    }
+  }
+  for (const arc of control.arcs || []) {
+    collectSecretStrings(arc.forbiddenSpoilers, secrets);
+    if (targetChapter !== undefined && arc.startChapter > targetChapter) collectSecretStrings(arc, secrets);
+  }
   for (const rule of getAllExposureRules(control)) {
     collectSecretStrings(rule.forbiddenEvidence, secrets);
     collectSecretStrings(rule.forbiddenInferences, secrets);
@@ -91,7 +118,9 @@ const genericSensitiveRepairs: Partial<Record<StoryViolationType, { issue: strin
 };
 
 export function buildSafeRepairRequest(violations: StoryViolation[], control: StoryControl): SafeRepairViolation[] {
-  const secrets = hiddenStrings(control);
+  const chapters = violations.map(violation => violation.chapterNumber ?? violation.chapter).filter((chapter): chapter is number =>
+    typeof chapter === 'number' && Number.isInteger(chapter) && chapter > 0);
+  const secrets = hiddenStrings(control, chapters);
   return violations.map(violation => {
     const generic = genericSensitiveRepairs[violation.type];
     return {
@@ -113,7 +142,9 @@ export function buildRepairPrompt(
   writerContext: string,
   control: StoryControl
 ): string {
-  const secrets = hiddenStrings(control);
+  const chapters = rejectedChapters.map(chapter => chapter.chapterNumber).filter((chapter): chapter is number =>
+    typeof chapter === 'number' && Number.isInteger(chapter) && chapter > 0);
+  const secrets = hiddenStrings(control, chapters);
   const safeRequest = buildSafeRepairRequest(violations, control);
   const prompt = `${writerContext}
 

@@ -252,7 +252,7 @@ describe('Story Engine Task 1 - V3 import and data integrity', () => {
     expect(parsed?.characters.some(character => character.name.includes('chìa khóa'))).toBe(false);
   });
 
-  test('13. AUTHOR_SETUP clears stale control/state/memory/QA/cache state but preserves chapters', () => {
+  test('13. AUTHOR_SETUP clears stale chapters/control/state/memory/QA/cache across projects', () => {
     const parsed = parseSetupFileContent(`${makeSetup().split('[STORY_ENGINE_BLUEPRINT_V3]')[0]}[STORY_ENGINE_SETTINGS_V3]\n{"temperature":0.4}`);
     expect(parsed).not.toBeNull();
     const next = applySetupImport(makeCreativeState(), parsed!);
@@ -261,7 +261,7 @@ describe('Story Engine Task 1 - V3 import and data integrity', () => {
     expect(next.memoryIndex).toBeUndefined();
     expect(next.lastValidationResult).toBeUndefined();
     expect(next.snapshots).toEqual([]);
-    expect(next.chapters).toHaveLength(1);
+    expect(next.chapters).toEqual([]);
   });
 
   test('14. FULL_PROJECT restores explicit derived state', () => {

@@ -20,6 +20,45 @@ export type EngineProgressInfo = PipelineProgressInfo;
 const CREATIVE_SNAPSHOT_LIMIT = 20;
 import { parseEpub, downloadTextFile } from '../../utils/fileHelpers';
 import { applySetupImport, parseSetupFileContent } from '../../services/storyEngine/setupImport';
+import { isRecord, normalizeText, parseJsonObject } from '../../services/storyEngine/runtimeValidation';
+
+function parseCreativeAnalysisResponse(raw: string): {
+    title: string;
+    genre: string;
+    premise: string;
+    worldNotes: string;
+    charNotes: string;
+    outline: string;
+    characters: Character[];
+} {
+    const data = parseJsonObject(raw, 'Creative analysis');
+    const characters: Character[] = [];
+    if (Array.isArray(data.characters)) {
+        data.characters.forEach((entry, index) => {
+            if (!isRecord(entry)) return;
+            const name = normalizeText(entry.name);
+            if (!name) return;
+            characters.push({
+                id: normalizeText(entry.id) || `char_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 7)}`,
+                name,
+                gender: normalizeText(entry.gender) || '',
+                age: normalizeText(entry.age) || '',
+                role: normalizeText(entry.role) || '',
+                appearance: normalizeText(entry.appearance) || '',
+                personality: normalizeText(entry.personality) || ''
+            });
+        });
+    }
+    return {
+        title: normalizeText(data.title) || '',
+        genre: normalizeText(data.genre) || '',
+        premise: normalizeText(data.premise) || '',
+        worldNotes: normalizeText(data.worldNotes) || '',
+        charNotes: normalizeText(data.charNotes) || '',
+        outline: normalizeText(data.outline) || '',
+        characters
+    };
+}
 
 export const parseSetupFile = parseSetupFileContent;
 
@@ -131,12 +170,12 @@ export const useCreativePage = ({
                 async (modelId) => {
                     const r = await ai.models.generateContent({
                         model: modelId,
-                        contents: `Bạn là chuyên gia thiết kế cốt truyện tiên hiệp/đô thị/khoa huyễn. 
+                        contents: `Bạn là chuyên gia thiết kế cốt truyện đa thể loại. Không tự thêm quy tắc thể loại, hệ thống sức mạnh hay yếu tố siêu nhiên nếu người dùng không yêu cầu.
 Dựa vào ý tưởng sau của người dùng: "${userPrompt}"
 Hãy phát triển và điền vào các mục sau. Trả về đúng định dạng JSON, không có code block markdown:
 {
   "title": "Tên truyện đề xuất",
-  "genre": "Thể loại chính (Tiên Hiệp, Huyền Huyễn, Đô Thị...)",
+  "genre": "Thể loại chính phù hợp với ý tưởng người dùng",
   "premise": "Tóm tắt ý tưởng cốt truyện (Premise)",
   "worldNotes": "Bối cảnh, quy tắc và chi tiết thế giới do người dùng cung cấp",
   "charNotes": "Ghi chú nhân vật chung",
@@ -152,8 +191,7 @@ Hãy phát triển và điền vào các mục sau. Trả về đúng định d�
                 'Phân tích ý tưởng mới', addLog
             );
 
-            const jsonStr = res.replace(/```json/g, '').replace(/```/g, '').trim();
-            const data = JSON.parse(jsonStr);
+            const data = parseCreativeAnalysisResponse(res);
 
             setSetup({
                 seedTitle: data.title || '',
@@ -168,7 +206,7 @@ Hãy phát triển và điền vào các mục sau. Trả về đúng định d�
                 ...prev,
                 seriesPremise: data.premise || '',
                 continuitySummary: data.premise || '',
-                characters: Array.isArray(data.characters) ? data.characters.map((c: any) => ({ ...c, id: 'char_' + Date.now() + '_' + Math.random() })) : prev.characters
+                characters: data.characters.length ? data.characters : prev.characters
             }));
 
             if (setStoryInfoSafe && storyInfo) {
@@ -214,7 +252,7 @@ Hãy phát triển và điền vào các mục sau. Trả về đúng định d�
                         contents: `Bạn là biên tập văn học. Đọc nội dung truyện sau. Hãy tóm tắt và trích xuất thông tin để chuẩn bị viết tiếp.
 Trả về định dạng JSON (không có markdown):
 {
-  "genre": "Thể loại theo đánh giá của bạn (Tiên hiệp, kỳ ảo, hiện đại...)",
+  "genre": "Thể loại theo nội dung gốc (ví dụ: lịch sử, trinh thám, lãng mạn, kỳ ảo)",
   "premise": "Tóm tắt mạch truyện tới thời điểm hiện tại.",
   "worldNotes": "Quy tắc và bối cảnh thế giới hiện có.",
   "charNotes": "Ghi chú nhân vật chung",
@@ -233,8 +271,7 @@ ${textContent}`,
                 'Phân tích EPUB', addLog
             );
 
-            const jsonStr = response.replace(/```json/g, '').replace(/```/g, '').trim();
-            const data = JSON.parse(jsonStr);
+            const data = parseCreativeAnalysisResponse(response);
 
             setSetup({
                 seedTitle: parsed.info.title || '',
@@ -249,7 +286,7 @@ ${textContent}`,
                 ...prev,
                 seriesPremise: data.premise || '',
                 continuitySummary: data.premise || '',
-                characters: Array.isArray(data.characters) ? data.characters.map((c: any) => ({ ...c, id: 'char_' + Date.now() + '_' + Math.random() })) : prev.characters
+                characters: data.characters.length ? data.characters : prev.characters
             }));
 
             addToast('Nhập dữ liệu và phân tích thành công!', 'success');

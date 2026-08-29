@@ -218,6 +218,7 @@ describe('Story Engine Task 2 - context isolation and planning contracts', () =>
       bible, existingControl: control, existingState: makeState(), existingChapters: [], batchSize: 1,
       aiFastRunner: async (_prompt, sys) => sys?.includes('Chapter Planner') ? validPlannerJson(1) : '{}',
       aiProRunner: async (_prompt, sys) => {
+        if (sys?.includes('semantic plan validator')) return JSON.stringify({ pass: true, violations: [] });
         if (sys?.includes('semantic-validator')) return JSON.stringify({ pass: true, violations: [] });
         writerCalls++;
         return xml(1);
@@ -257,7 +258,10 @@ describe('Story Engine Task 2 - context isolation and planning contracts', () =>
         const match = sys?.match(/\[(\d+)\]/); const chapter = Number(match?.[1] || 17);
         return sys?.includes('Chapter Planner') ? validPlannerJson(chapter) : '{}';
       },
-      aiProRunner: async (_prompt, sys) => sys.includes('[17]') ? xml(17) : xml(19)
+      aiProRunner: async (_prompt, sys) => {
+        if (sys.includes('semantic plan validator')) return JSON.stringify({ pass: true, violations: [] });
+        return sys.includes('[17]') ? xml(17) : xml(19);
+      }
     });
     expect(result.success).toBe(false);
     expect(result.acceptedChapters).toEqual([]);
