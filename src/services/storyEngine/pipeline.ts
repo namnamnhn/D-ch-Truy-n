@@ -7,6 +7,7 @@ import {
   StoryBible,
   StoryControl,
   StoryState,
+  StoryModelTier,
   ValidationResult,
   STORY_CONTROL_SCHEMA_VERSION,
   STORY_STATE_SCHEMA_VERSION,
@@ -27,6 +28,7 @@ import { compactMemoryIndex } from './memoryManager';
 import { formatSemanticQaDiagnosticLines } from './diagnostics';
 import { createOutputLanguageContract } from './languageContract';
 import { createEmptyInBatchContinuityLock, extendInBatchContinuityLock } from './continuityLock';
+import { getChapterPacingTarget, normalizeStoryControlPacing } from './pacingContract';
 
 export interface PipelineOptions {
   bible: StoryBible;
@@ -38,6 +40,8 @@ export interface PipelineOptions {
   aiFastRunner?: (prompt: string, sys?: string) => Promise<string>;
   aiProRunner?: (prompt: string, sys?: string) => Promise<string>;
   aiSemanticRunner?: (prompt: string, sys?: string) => Promise<string>;
+  aiRoleRunner?: (role: StoryModelRole, prompt: string, sys?: string) => Promise<string>;
+  storyModelAvailability?: Partial<Record<StoryModelTier, boolean>>;
   onProgress?: (info: PipelineProgressInfo | string, progressPercent?: number) => void;
   onLog?: (message: string) => void;
 }
@@ -217,6 +221,8 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
     aiFastRunner,
     aiProRunner,
     aiSemanticRunner,
+    aiRoleRunner,
+    storyModelAvailability,
     onProgress = () => {},
     onLog = () => {}
   } = options;
@@ -227,10 +233,18 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
   const reportProgress = (stage: PipelineStage, message: string, progress: number, retryCount = 0) => {
     onProgress({ stage, message, progress, currentChapter: nextChapter, totalChapters: targetEndChapter, retryCount }, progress);
   };
+  const availability: Partial<Record<StoryModelTier, boolean>> = storyModelAvailability || {
+    FAST: Boolean(aiRoleRunner || aiFastRunner),
+    QUALITY: Boolean(aiRoleRunner || aiProRunner)
+  };
+  const qualityAvailable = availability.QUALITY === true;
   const fastRunner = aiFastRunner || (async (prompt: string) => prompt);
   const roleRunner = (role: StoryModelRole) => {
-    const route = getStoryModelRoute(role, { FAST: Boolean(aiFastRunner), QUALITY: Boolean(aiProRunner) });
+    const route = getStoryModelRoute(role, availability);
     onLog(`[ModelRouting] role=${role} tier=${route.tier} status=${route.status}`);
+    if (aiRoleRunner && availability[route.tier] === true) {
+      return (prompt: string, sys?: string) => aiRoleRunner(role, prompt, sys);
+    }
     if (route.tier === 'QUALITY') {
       if (aiProRunner) return aiProRunner;
       if (route.allowFastFallback && aiFastRunner) return aiFastRunner;
@@ -238,25 +252,28 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
     }
     return fastRunner;
   };
-  const semanticSource = aiSemanticRunner || aiProRunner;
-  const semanticRunner = semanticSource
+  const semanticRunner = aiSemanticRunner || qualityAvailable
     ? (prompt: string, systemInstruction: string) => {
-      const route = getStoryModelRoute('STORY_VALIDATOR_SEMANTIC', { QUALITY: true });
-      onLog(`[ModelRouting] role=${route.role} tier=${route.tier} status=${route.status}`);
-      return semanticSource(prompt, systemInstruction);
+      if (aiSemanticRunner) {
+        const route = getStoryModelRoute('STORY_VALIDATOR_SEMANTIC', { QUALITY: true });
+        onLog(`[ModelRouting] role=${route.role} tier=${route.tier} status=${route.status}`);
+        return aiSemanticRunner(prompt, systemInstruction);
+      }
+      return roleRunner('STORY_VALIDATOR_SEMANTIC')(prompt, systemInstruction);
     }
     : undefined;
 
   reportProgress('compiler', 'Kiểm tra & biên dịch Story Control...', 10);
-  const control = canReuseStoryControl(existingControl, hash)
+  const rawControl = canReuseStoryControl(existingControl, hash)
     ? existingControl
     : await compileStoryControl(bible, prompt => roleRunner('STORY_CONTROL_COMPILER')(prompt, 'Story Control Compiler'));
+  const control = normalizeStoryControlPacing(rawControl);
   const currentState = canReuseDerivedState(existingState, control.sourceHash)
     ? existingState
     : { ...createInitialStoryState(control, existingChapters.length, bible.characters), continuitySummary: bible.continuitySummary };
   const currentMemories = compatibleMemories(existingMemories, control.sourceHash);
   let batchPlan = emptyBatchPlan(requested);
-  if (!aiProRunner) {
+  if (!qualityAvailable) {
     const validation = qaUnavailableResult(0, 'Required QUALITY model roles are unavailable; FAST fallback is not permitted.');
     return failResult('Không có model QUALITY hợp lệ; batch chưa được tạo hoặc lưu.', nextChapter, control, currentState, bible, batchPlan, 0, validation);
   }
@@ -277,7 +294,7 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
       plans.push(await generateBatchPlan(
         bible, control, currentState, currentMemories, chapter, 1, existingChapters,
         (prompt, sys) => roleRunner('PLANNER')(prompt, sys),
-        aiProRunner ? (prompt, sys) => roleRunner('PLAN_VALIDATOR_SEMANTIC')(prompt, sys) : undefined
+        qualityAvailable ? (prompt, sys) => roleRunner('PLAN_VALIDATOR_SEMANTIC')(prompt, sys) : undefined
       ));
     }
     batchPlan = mergePlans(plans, requested);
@@ -294,10 +311,13 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
   const writerContexts = new Map<number, string>();
   const rawOutputs = new Map<number, string>();
   let continuityLock = createEmptyInBatchContinuityLock();
+  const pacingTarget = getChapterPacingTarget(control);
   const writerContract = {
-    minimumWords: control.pacingRules?.minWordsPerChapter,
-    maximumWords: control.pacingRules?.maxWordsPerChapter,
-    softMinimumWords: control.settings?.softMinimumWords === true,
+    minimumWords: pacingTarget.min,
+    idealWords: pacingTarget.ideal,
+    maximumWords: pacingTarget.max,
+    softMinimumWords: pacingTarget.soft,
+    neverPadWithFiller: pacingTarget.neverPadWithFiller,
     outputLanguage: createOutputLanguageContract(control, bible)
   };
   try {

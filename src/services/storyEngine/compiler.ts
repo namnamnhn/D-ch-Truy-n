@@ -4,6 +4,7 @@ import { getCurrentArc, calculateArcProgress } from './arcController';
 import { createStoryControlFromBlueprint, parseBlueprintContent, validateBlueprintV3Object } from './blueprintParser';
 import { isRecord } from './runtimeValidation';
 import { getCharacterAccess, isWorldFactAvailable } from './storyAccess';
+import { pacingRulesFromSettings } from './pacingContract';
 
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -182,6 +183,8 @@ HÃY TRẢ VỀ DUY NHẤT 1 JSON VỚI ĐỊNH DẠNG SAU (Không thêm text ma
       const parsed: unknown = JSON.parse(cleaned);
       const control = ensureStoryControlV3Defaults(parsed);
       control.sourceHash = hash;
+      control.settings = bible.storyEngineSettingsV3 || control.settings;
+      control.pacingRules = pacingRulesFromSettings(control.settings, control.pacingRules);
       return control;
     } catch (e) {
       console.warn('[StoryEngineCompiler] AI generation failed, falling back to deterministic compiler:', e);
@@ -357,12 +360,8 @@ export function createDeterministicStoryControl(bible: StoryBible, sourceHash: s
       enforceRelationshipMemory: true,
       enforceClueDiscoveryProgression: true
     },
-    pacingRules: {
-      minWordsPerChapter: 2000,
-      maxWordsPerChapter: 3500,
-      climaxPacingMultiplier: 1.3,
-      cooldownChaptersAfterClimax: 2
-    },
+    pacingRules: pacingRulesFromSettings(bible.storyEngineSettingsV3),
+    settings: bible.storyEngineSettingsV3,
     mysteryThreads: [],
     authorOnlySecrets: []
   };

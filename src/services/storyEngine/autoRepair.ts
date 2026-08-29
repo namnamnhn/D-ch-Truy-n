@@ -3,6 +3,7 @@ import { BatchPlan, StoryControl, StoryViolation, StoryViolationType } from './t
 import { validateWriterOutput } from './writer';
 import { collectHiddenStoryStrings, redactHiddenStoryText } from './diagnostics';
 import { createOutputLanguageContract } from './languageContract';
+import { formatChapterPacingTarget, getChapterPacingTarget } from './pacingContract';
 
 export interface SafeRepairViolation {
   type: StoryViolationType;
@@ -61,6 +62,10 @@ const genericSensitiveRepairs: Partial<Record<StoryViolationType, { issue: strin
   WORD_COUNT_DEFICIT: {
     issue: 'The chapter is below the configured structural minimum length.',
     instruction: 'Expand the existing approved plan through action, sensory detail, dialogue, reasoning, character interaction, tactical friction, environment, and consequences. Do not add filler, duplicate exposition, a new major plot event, a mystery dump, a new major character, or a forced cliffhanger.'
+  },
+  WORD_COUNT_EXCESS: {
+    issue: 'The chapter exceeds the configured hard maximum length.',
+    instruction: 'Tighten the approved scenes without removing required events, continuity facts, or necessary consequences.'
   }
 };
 
@@ -115,16 +120,20 @@ export async function repairBatchOutput(
   runner: (prompt: string, systemInstruction: string) => Promise<string>
 ): Promise<{ chapters: CreativeChapter[]; rawOutput: string }> {
   const requested = batchPlan.chapters.map(chapter => chapter.chapterNumber);
+  const pacingTarget = getChapterPacingTarget(control);
   const systemInstruction = `You are the Story Engine V3 repair writer.
 Rewrite exactly chapters [${requested.join(', ')}] using only the Writer View and safe repair request.
 Do not infer or invent hidden facts. Fix every listed issue while preserving approved plan events.
+Chapter pacing contract: ${formatChapterPacingTarget(pacingTarget)}. The maximum is hard; the minimum is ${pacingTarget.soft ? 'advisory' : 'hard'}. ${pacingTarget.neverPadWithFiller ? 'Never pad with filler to reach a word target.' : ''}
 Return only: <CHAPTER number="X" title="Chương X: Tiêu đề">complete prose</CHAPTER>`;
   const prompt = buildRepairPrompt(rejectedChapters, violations, writerContext, control);
   const rawOutput = await runner(prompt, systemInstruction);
   const parsed = validateWriterOutput(rawOutput, requested, {
-    minimumWords: control.pacingRules?.minWordsPerChapter,
-    maximumWords: control.pacingRules?.maxWordsPerChapter,
-    softMinimumWords: control.settings?.softMinimumWords === true,
+    minimumWords: pacingTarget.min,
+    idealWords: pacingTarget.ideal,
+    maximumWords: pacingTarget.max,
+    softMinimumWords: pacingTarget.soft,
+    neverPadWithFiller: pacingTarget.neverPadWithFiller,
     outputLanguage: createOutputLanguageContract(control)
   });
   return { chapters: parsed.chapters, rawOutput };

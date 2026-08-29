@@ -7,6 +7,7 @@ import {
     compileStoryControl,
     StoryBible,
     PipelineProgressInfo,
+    StoryModelRole,
     getStoryModelCandidates,
     mergeExtractedCharacters,
     runStoryEngineSanityCheck,
@@ -415,9 +416,11 @@ ${textContent}`,
                 memoryIndex: state.memoryIndex
             };
 
-            const fastRunner = async (prompt: string, sys?: string) => {
+            const roleAwareRunner = async (role: StoryModelRole, prompt: string, sys?: string) => {
+                const semanticRole = role === 'PLAN_VALIDATOR_SEMANTIC' || role === 'STORY_VALIDATOR_SEMANTIC';
+                const longFormRole = role === 'WRITER' || role === 'AUTO_REPAIR';
                 return smartExecution(
-                    [...getStoryModelCandidates('STATE_EXTRACTOR', IS_LITE)],
+                    [...getStoryModelCandidates(role, IS_LITE)],
                     async (modelId) => {
                         const r = await ai.models.generateContent({
                             model: modelId,
@@ -425,56 +428,14 @@ ${textContent}`,
                             config: {
                                 systemInstruction: sys,
                                 safetySettings: SAFETY_SETTINGS,
-                                temperature: 0.3,
+                                temperature: semanticRole ? 0.1 : longFormRole ? 0.8 : 0.3,
+                                ...(longFormRole ? { maxOutputTokens: 65536 } : {}),
                                 abortSignal: controller.signal
                             }
                         });
                         return r.text || '';
                     },
-                    'Fast Engine Task', addLog
-                );
-            };
-
-            const proCandidates = [...getStoryModelCandidates('WRITER', IS_LITE)];
-
-            const proRunner = async (prompt: string, sys?: string) => {
-                return smartExecution(
-                    proCandidates,
-                    async (modelId) => {
-                        const r = await ai.models.generateContent({
-                            model: modelId,
-                            contents: prompt,
-                            config: {
-                                systemInstruction: sys,
-                                safetySettings: SAFETY_SETTINGS,
-                                temperature: 0.8,
-                                maxOutputTokens: 65536,
-                                abortSignal: controller.signal
-                            }
-                        });
-                        return r.text || '';
-                    },
-                    'Pro Writer Task', addLog
-                );
-            };
-
-            const semanticRunner = async (prompt: string, sys?: string) => {
-                return smartExecution(
-                    [...getStoryModelCandidates('STORY_VALIDATOR_SEMANTIC', IS_LITE)],
-                    async (modelId) => {
-                        const r = await ai.models.generateContent({
-                            model: modelId,
-                            contents: prompt,
-                            config: {
-                                systemInstruction: sys,
-                                safetySettings: SAFETY_SETTINGS,
-                                temperature: 0.1,
-                                abortSignal: controller.signal
-                            }
-                        });
-                        return r.text || '';
-                    },
-                    'Strict Semantic QA', addLog
+                    `Story Engine ${role}`, addLog
                 );
             };
 
@@ -485,9 +446,8 @@ ${textContent}`,
                 existingMemories: state.memoryIndex || [],
                 existingChapters: state.chapters || [],
                 batchSize,
-                aiFastRunner: fastRunner,
-                aiProRunner: IS_LITE ? undefined : proRunner,
-                aiSemanticRunner: IS_LITE ? undefined : semanticRunner,
+                aiRoleRunner: roleAwareRunner,
+                storyModelAvailability: { FAST: true, QUALITY: !IS_LITE },
                 onProgress: (info, progressPercent) => {
                     if (typeof info === 'string') {
                         setEngineProgress({

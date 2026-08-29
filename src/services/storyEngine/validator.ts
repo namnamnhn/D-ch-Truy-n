@@ -26,6 +26,7 @@ import {
   extendInBatchContinuityLock,
   findConcreteFactContradictions
 } from './continuityLock';
+import { getChapterPacingTarget } from './pacingContract';
 
 function configuredBoolean(control: StoryControl, key: string): boolean {
   const value = control.settings?.[key];
@@ -84,6 +85,7 @@ export function validateDeterministicBatchOutput(
     'bannedphrases', 'forbiddenphrases', 'explicitbannedphrases'
   ]), bannedPhrases);
   const outputLanguage = createOutputLanguageContract(control, bible);
+  const pacingTarget = getChapterPacingTarget(control);
   let continuityLock = createEmptyInBatchContinuityLock();
 
   const actualNumbers = chapters.map((chapter, index) => chapterNumberOf(chapter, batchPlan.startChapter + index));
@@ -224,13 +226,20 @@ export function validateDeterministicBatchOutput(
     }
 
     const wordCount = countProseWords(content);
-    const minimum = control.pacingRules?.minWordsPerChapter ?? 1500;
+    const minimum = pacingTarget.min;
     if (wordCount < minimum) {
-      const target = configuredBoolean(control, 'softMinimumWords') ? warnings : violations;
+      const target = pacingTarget.soft ? warnings : violations;
       target.push(deterministicViolation({
-        type: 'WORD_COUNT_DEFICIT', severity: configuredBoolean(control, 'softMinimumWords') ? 'LOW' : 'HIGH', chapterNumber,
+        type: 'WORD_COUNT_DEFICIT', severity: pacingTarget.soft ? 'LOW' : 'HIGH', chapterNumber,
         message: `Chapter has ${wordCount} words; configured minimum is ${minimum}.`,
         suggestedRepair: 'Expand the existing approved plan through action, sensory detail, dialogue, reasoning, character interaction, tactical friction, environment, and consequences. Do not add filler, duplicate exposition, a new major plot beat, or a premature reveal.'
+      }));
+    }
+    if (wordCount > pacingTarget.max) {
+      violations.push(deterministicViolation({
+        type: 'WORD_COUNT_EXCESS', severity: 'HIGH', chapterNumber,
+        message: `Chapter has ${wordCount} words; configured maximum is ${pacingTarget.max}.`,
+        suggestedRepair: 'Tighten the approved scenes without removing required events or continuity facts.'
       }));
     }
     if (plan) continuityLock = extendInBatchContinuityLock(continuityLock, chapter, plan);

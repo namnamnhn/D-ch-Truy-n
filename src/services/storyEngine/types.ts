@@ -186,7 +186,10 @@ export interface ContinuityRules {
 
 export interface PacingRules {
   minWordsPerChapter: number;
+  idealWordsPerChapter?: number;
   maxWordsPerChapter: number;
+  softMinimumWords?: boolean;
+  neverPadWithFiller?: boolean;
   climaxPacingMultiplier: number;
   cooldownChaptersAfterClimax: number;
 }
@@ -525,7 +528,8 @@ export const STORY_VIOLATION_TYPES = [
   'RESOURCE_CONTRADICTION',
   'CHARACTER_OOC',
   'WORLD_FACT_CONTRADICTION',
-  'WORD_COUNT_DEFICIT'
+  'WORD_COUNT_DEFICIT',
+  'WORD_COUNT_EXCESS'
 ] as const;
 
 export type StoryViolationType = typeof STORY_VIOLATION_TYPES[number];

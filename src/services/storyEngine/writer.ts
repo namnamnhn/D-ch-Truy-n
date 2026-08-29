@@ -6,8 +6,10 @@ export const MAX_WRITER_ATTEMPTS = 3;
 
 export interface WriterStructuralContract {
   minimumWords?: number;
+  idealWords?: number;
   maximumWords?: number;
   softMinimumWords?: boolean;
+  neverPadWithFiller?: boolean;
   outputLanguage?: OutputLanguageContract;
 }
 
@@ -204,8 +206,8 @@ export async function generateChaptersProse(
   const requested = batchPlan.chapters.map(chapter => chapter.chapterNumber);
   let violations: string[] = [];
   for (let attempt = 1; attempt <= MAX_WRITER_ATTEMPTS; attempt++) {
-    const lengthContract = contract.minimumWords !== undefined || contract.maximumWords !== undefined
-      ? `\nLENGTH CONTRACT: each chapter must contain${contract.minimumWords !== undefined && !contract.softMinimumWords ? ` at least ${contract.minimumWords} words` : ''}${contract.maximumWords !== undefined ? `${contract.minimumWords !== undefined && !contract.softMinimumWords ? ' and' : ''} at most ${contract.maximumWords} words` : ''}. Expand only the approved plan through action, sensory detail, dialogue, reasoning, character interaction, tactical friction, environment, and consequences. Do not use filler, repeated recap/exposition, new major plot beats, premature mystery reveals, new major characters, or a forced cliffhanger.`
+    const lengthContract = contract.minimumWords !== undefined || contract.idealWords !== undefined || contract.maximumWords !== undefined
+      ? `\nLENGTH CONTRACT: target ${contract.idealWords ?? contract.minimumWords ?? contract.maximumWords} words per chapter; ${contract.minimumWords !== undefined ? `${contract.softMinimumWords ? 'soft/advisory' : 'hard'} minimum ${contract.minimumWords} words; ` : ''}${contract.maximumWords !== undefined ? `hard maximum ${contract.maximumWords} words.` : ''} Expand only the approved plan through action, sensory detail, dialogue, reasoning, character interaction, tactical friction, environment, and consequences.${contract.neverPadWithFiller ? ' NEVER pad to a target with filler.' : ''} Do not use filler, repeated recap/exposition, new major plot beats, premature mystery reveals, new major characters, or a forced cliffhanger.`
       : '';
     const sys = `Bạn là Writer của Story Engine V3. Viết chính xác các chương [${requested.join(', ')}], mỗi chương đúng một lần.
 Output chỉ gồm envelope XML theo mẫu:

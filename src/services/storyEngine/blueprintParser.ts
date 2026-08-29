@@ -11,6 +11,7 @@ import {
   STORY_CONTROL_SCHEMA_VERSION,
   WorldFact
 } from './types';
+import { pacingRulesFromSettings } from './pacingContract';
 import {
   isRecord,
   normalizeJsonArray,
@@ -284,6 +285,7 @@ export function createStoryControlFromBlueprint(
   sourceHash = 'custom_unhashed',
   importedSettings?: JsonObject
 ): StoryControl {
+  const settings = importedSettings || blueprint.settings;
   const characterRegistry = Object.fromEntries(blueprint.characterRegistry.map(character => [character.id, character]));
   const derivedCharacterGates: CharacterGate[] = blueprint.characterRegistry
     .filter(character => typeof character.unlockChapter === 'number' && character.unlockChapter > 1)
@@ -315,13 +317,8 @@ export function createStoryControlFromBlueprint(
       enforceRelationshipMemory: true,
       enforceClueDiscoveryProgression: true
     },
-    pacingRules: {
-      minWordsPerChapter: 2000,
-      maxWordsPerChapter: 3500,
-      climaxPacingMultiplier: 1.3,
-      cooldownChaptersAfterClimax: 2
-    },
-    settings: importedSettings || blueprint.settings,
+    pacingRules: pacingRulesFromSettings(settings),
+    settings,
     mysteryThreads: blueprint.mysteryThreads,
     originality: blueprint.originality,
     authorOnlySecrets: blueprint.authorOnlySecrets,

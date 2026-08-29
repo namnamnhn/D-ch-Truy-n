@@ -32,8 +32,30 @@ function stringSetting(control: StoryControl, bible: StoryBible | undefined, key
   return undefined;
 }
 
-function booleanSetting(control: StoryControl, bible: StoryBible | undefined, keys: string[]): boolean {
-  return keys.some(key => control.settings?.[key] === true || bible?.storyEngineSettingsV3?.[key] === true);
+function explicitBooleanSetting(
+  control: StoryControl,
+  bible: StoryBible | undefined,
+  keys: string[]
+): boolean | undefined {
+  for (const source of [control.settings, bible?.storyEngineSettingsV3]) {
+    const values = keys.map(key => source?.[key])
+      .filter((value): value is boolean => typeof value === 'boolean');
+    if (values.includes(true)) return true;
+    if (values.includes(false)) return false;
+  }
+  return undefined;
+}
+
+function isExplicitMultilingual(
+  control: StoryControl,
+  bible: StoryBible | undefined,
+  targetLanguage: string
+): boolean {
+  const booleanKeys = ['multilingual', 'multilingualOutput', 'allowMultilingualOutput', 'allowCodeSwitching'];
+  if (explicitBooleanSetting(control, bible, booleanKeys) === true) return true;
+  const mode = stringSetting(control, bible, ['outputLanguageMode', 'languageMode']);
+  const descriptor = `${targetLanguage} ${mode || ''}`.toLocaleLowerCase('en-US');
+  return /\b(?:multilingual|bilingual|mixed[- ]language|đa ngôn ngữ|song ngữ)\b/u.test(descriptor);
 }
 
 function collectAllowlistedTerms(value: unknown, output: Set<string>): void {
@@ -75,9 +97,12 @@ export function createOutputLanguageContract(
       if (item === 'LATIN' || item === 'CYRILLIC' || item === 'HAN') allowedScripts.add(item);
     }
   }
+  const explicitStrict = explicitBooleanSetting(control, bible, ['strictOutputLanguage', 'enforceOutputLanguage']);
   return {
     targetLanguage,
-    strict: booleanSetting(control, bible, ['strictOutputLanguage', 'enforceOutputLanguage']),
+    // V3 defaults to deterministic script protection. It is relaxed only by
+    // an explicit multilingual declaration or a deliberate boolean opt-out.
+    strict: explicitStrict ?? !isExplicitMultilingual(control, bible, targetLanguage),
     permittedForeignTerms: [...permitted],
     allowedScripts: [...allowedScripts]
   };

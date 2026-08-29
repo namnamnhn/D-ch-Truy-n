@@ -1,5 +1,6 @@
 import { getAllExposureRules, getCharacterAccess, getWorldFactGateChapter } from './storyAccess';
 import { StoryControl, StoryValidationResult, StoryViolation } from './types';
+import { formatChapterPacingTarget, getChapterPacingTarget } from './pacingContract';
 
 const HIDDEN_DETAIL = '[HIDDEN_DETAIL]';
 const MAX_DIAGNOSTIC_TEXT_LENGTH = 600;
@@ -153,6 +154,9 @@ export function formatSemanticQaDiagnosticLines(
     if (violation.relatedRuleId) lines.push(`relatedRuleId=${violation.relatedRuleId}`);
     if (violation.relatedCharacter) lines.push(`relatedCharacter=${violation.relatedCharacter}`);
     if (violation.relatedThreadId) lines.push(`relatedThreadId=${violation.relatedThreadId}`);
+    if (violation.type === 'WORD_COUNT_DEFICIT' || violation.type === 'WORD_COUNT_EXCESS') {
+      lines.push(`pacingTarget=${formatChapterPacingTarget(getChapterPacingTarget(control))}`);
+    }
     return lines.join('\n');
   });
 }
