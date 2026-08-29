@@ -8,6 +8,16 @@ import { applySetupImport, parseSetupFileContent } from '../src/services/storyEn
 import { runStoryEngineSanityCheck } from '../src/services/storyEngine/sanity';
 import { compactMemoryIndex, retrieveRelevantMemories } from '../src/services/storyEngine/memoryManager';
 import {
+  canonicalizeStoryValidation,
+  parseSemanticValidationResponse,
+  runSemanticValidation
+} from '../src/services/storyEngine/semanticValidator';
+import {
+  formatSemanticQaDiagnosticLines,
+  sanitizeValidationResultForDiagnostics
+} from '../src/services/storyEngine/diagnostics';
+import { buildLogFileContent } from '../src/utils/logExport';
+import {
   ChapterMemory,
   ChapterPlan,
   MEMORY_SCHEMA_VERSION,
@@ -25,6 +35,14 @@ const CANARIES = [
   'LOCKED_FACT_FINAL_P63',
   'FUTURE_CHARACTER_FINAL_K84',
   'FUTURE_ARC_FINAL_Z55'
+] as const;
+
+const DIAGNOSTIC_CANARIES = [
+  'AUTHOR_SECRET_DIAG_X91',
+  'MYSTERY_TRUTH_DIAG_Q72',
+  'LOCKED_FACT_DIAG_P63',
+  'FUTURE_PROFILE_DIAG_K84',
+  'FUTURE_ARC_DIAG_Z55'
 ] as const;
 
 function rawBlueprint(arcs = [
@@ -258,6 +276,238 @@ async function execute(options: HarnessOptions = {}) {
   stateIntegrationStarted = false;
   return { result, bible, control, currentState, chapters, prompts, systems, logs, writerCalls, inputSnapshot };
 }
+
+function diagnosticControl(): StoryControl {
+  const { control } = fixture();
+  control.authorOnlySecrets = [DIAGNOSTIC_CANARIES[0]];
+  const mysteryThread = control.mysteryThreads[0];
+  if (mysteryThread && typeof mysteryThread === 'object' && !Array.isArray(mysteryThread)) {
+    mysteryThread.actualTruth = DIAGNOSTIC_CANARIES[1];
+  }
+  const lockedFact = control.worldFacts.find(fact => fact.id === 'locked');
+  if (lockedFact) lockedFact.fact = DIAGNOSTIC_CANARIES[2];
+  const futureCharacter = Object.values(control.characterRegistry).find(character => character.id === 'future');
+  if (futureCharacter) futureCharacter.appearance = DIAGNOSTIC_CANARIES[3];
+  const futureArc = control.arcs.find(arc => arc.id === 'arc_b');
+  if (futureArc) futureArc.theme = DIAGNOSTIC_CANARIES[4];
+  return control;
+}
+
+function diagnosticFailure(text: string, type: StoryViolationType = 'PLAN_VIOLATION') {
+  return canonicalizeStoryValidation(false, [{
+    type,
+    severity: 'HIGH',
+    chapterNumber: 7,
+    message: `Message ${text}`,
+    evidence: `Evidence ${text}`,
+    suggestedRepair: `Repair without ${text}`
+  }], [], { attempts: 1 });
+}
+
+describe('Story Engine QA diagnostics patch', () => {
+  test('1. FAIL violation message is preserved', () => {
+    const parsed = parseSemanticValidationResponse(JSON.stringify({
+      pass: false,
+      violations: [{ type: 'PLAN_VIOLATION', severity: 'HIGH', message: 'Primary goal was omitted.' }]
+    }));
+    expect(parsed.pass).toBe(false);
+    expect(parsed.violations[0].message).toBe('Primary goal was omitted.');
+  });
+
+  test('2. evidence is preserved', () => {
+    const parsed = parseSemanticValidationResponse(JSON.stringify({
+      pass: false,
+      violations: [{ type: 'PLAN_VIOLATION', severity: 'HIGH', message: 'Goal omitted.', evidence: 'The caravan turns away.' }]
+    }));
+    expect(parsed.violations[0].evidence).toBe('The caravan turns away.');
+  });
+
+  test('3. suggestedRepair is preserved', () => {
+    const parsed = parseSemanticValidationResponse(JSON.stringify({
+      pass: false,
+      violations: [{
+        type: 'PLAN_VIOLATION', severity: 'HIGH', message: 'Goal omitted.',
+        suggestedRepair: 'Restore the approved meeting without adding a reveal.'
+      }]
+    }));
+    expect(parsed.violations[0].suggestedRepair).toBe('Restore the approved meeting without adding a reveal.');
+  });
+
+  test('4. chapter number and related identifiers are preserved', () => {
+    const parsed = parseSemanticValidationResponse(JSON.stringify({
+      pass: false,
+      violations: [{
+        type: 'KNOWLEDGE_LEAK', severity: 'HIGH', chapterNumber: 2, message: 'Unsupported fact.',
+        relatedRuleId: 'rule_2', relatedCharacter: 'Lan', relatedThreadId: 'thread_2'
+      }]
+    }));
+    expect(parsed.violations[0]).toMatchObject({
+      chapterNumber: 2, relatedRuleId: 'rule_2', relatedCharacter: 'Lan', relatedThreadId: 'thread_2'
+    });
+  });
+
+  test('5. multiple violations are logged individually after the unchanged summary', async () => {
+    const response = JSON.stringify({
+      pass: false,
+      violations: [
+        { type: 'PLAN_VIOLATION', severity: 'HIGH', chapterNumber: 7, message: 'Plan issue.', evidence: 'First excerpt.' },
+        { type: 'CHRONOLOGY_CONTRADICTION', severity: 'HIGH', chapterNumber: 7, message: 'Time issue.', evidence: 'Second excerpt.' }
+      ]
+    });
+    const run = await execute({ count: 1, semanticResponses: [response], repairResponses: ['malformed', 'malformed'] });
+    const details = run.logs.filter(line => line.startsWith('[Semantic QA Detail]'));
+    expect(details).toHaveLength(2);
+    expect(run.logs.join('\n')).toContain('violations=PLAN_VIOLATION:HIGH,CHRONOLOGY_CONTRADICTION:HIGH');
+  });
+
+  test('6. Repair Attempt 1 revalidation logs its new violation detail', async () => {
+    const run = await execute({
+      count: 1,
+      semanticResponses: [
+        semantic(false, 'PLAN_VIOLATION', 'initial plan excerpt'),
+        semantic(false, 'CHRONOLOGY_CONTRADICTION', 'repair one chronology excerpt'),
+        semantic(true)
+      ],
+      repairResponses: [xml(7, 'REPAIR_ONE'), xml(7, 'REPAIR_TWO')]
+    });
+    const logs = run.logs.join('\n');
+    expect(logs).toContain('repairAttempt=1 status=FAIL violations=CHRONOLOGY_CONTRADICTION:HIGH');
+    expect(logs).toContain('evidence=repair one chronology excerpt');
+  });
+
+  test('7. Repair Attempt 2 revalidation logs its final violation detail', async () => {
+    const run = await execute({
+      count: 1,
+      semanticResponses: [
+        semantic(false, 'PLAN_VIOLATION', 'initial plan excerpt'),
+        semantic(false, 'CHRONOLOGY_CONTRADICTION', 'repair one chronology excerpt'),
+        semantic(false, 'REAL_WORLD_CONTAMINATION', 'repair two contamination excerpt')
+      ],
+      repairResponses: [xml(7, 'REPAIR_ONE'), xml(7, 'REPAIR_TWO')]
+    });
+    const logs = run.logs.join('\n');
+    expect(logs).toContain('repairAttempt=2 status=FAIL violations=REAL_WORLD_CONTAMINATION:HIGH');
+    expect(logs).toContain('evidence=repair two contamination excerpt');
+  });
+
+  test('8. mystery actualTruth is redacted from diagnostic log text', () => {
+    const logs = formatSemanticQaDiagnosticLines(diagnosticFailure(DIAGNOSTIC_CANARIES[1]), diagnosticControl()).join('\n');
+    expect(logs).not.toContain(DIAGNOSTIC_CANARIES[1]);
+    expect(logs).toContain('[HIDDEN_DETAIL]');
+  });
+
+  test('9. author-only secret is redacted from diagnostic log text', () => {
+    const logs = formatSemanticQaDiagnosticLines(diagnosticFailure(DIAGNOSTIC_CANARIES[0]), diagnosticControl()).join('\n');
+    expect(logs).not.toContain(DIAGNOSTIC_CANARIES[0]);
+  });
+
+  test('10. locked world fact is redacted from diagnostic log text', () => {
+    const logs = formatSemanticQaDiagnosticLines(diagnosticFailure(DIAGNOSTIC_CANARIES[2]), diagnosticControl()).join('\n');
+    expect(logs).not.toContain(DIAGNOSTIC_CANARIES[2]);
+  });
+
+  test('11. future character profile is redacted from diagnostic log text', () => {
+    const result = diagnosticFailure(DIAGNOSTIC_CANARIES[3]);
+    result.violations[0].chapterNumber = undefined;
+    result.violations[0].chapter = undefined;
+    const logs = formatSemanticQaDiagnosticLines(result, diagnosticControl()).join('\n');
+    expect(logs).not.toContain(DIAGNOSTIC_CANARIES[3]);
+  });
+
+  test('12. future arc spoiler is redacted from diagnostic log text', () => {
+    const logs = formatSemanticQaDiagnosticLines(diagnosticFailure(DIAGNOSTIC_CANARIES[4]), diagnosticControl()).join('\n');
+    expect(logs).not.toContain(DIAGNOSTIC_CANARIES[4]);
+  });
+
+  test('13. diagnostic fields do not change PASS or FAIL verdict semantics', async () => {
+    const pass = await runSemanticValidation('view', async () => JSON.stringify({
+      pass: true, violations: [], warnings: [{ type: 'CLICHE_OVERUSE', severity: 'LOW', message: 'Advisory.', evidence: 'Brief.' }]
+    }));
+    const fail = await runSemanticValidation('view', async () => JSON.stringify({
+      pass: false, violations: [{ type: 'PLAN_VIOLATION', severity: 'HIGH', message: 'Blocking.', evidence: 'Brief.' }]
+    }));
+    expect(pass.status).toBe('PASS');
+    expect(fail.status).toBe('FAIL');
+  });
+
+  test('14. fail-closed retry bound and QA_UNAVAILABLE behavior are unchanged', async () => {
+    let calls = 0;
+    const result = await runSemanticValidation('view', async () => { calls++; return '{invalid'; });
+    expect(calls).toBe(2);
+    expect(result).toMatchObject({ pass: false, status: 'QA_UNAVAILABLE', attempts: 2 });
+  });
+
+  test('15. exported error log contains safe details for initial QA and both repairs', async () => {
+    const run = await execute({
+      count: 1,
+      semanticResponses: [
+        semantic(false, 'PLAN_VIOLATION', 'initial evidence'),
+        semantic(false, 'CHRONOLOGY_CONTRADICTION', 'repair one evidence'),
+        semantic(false, 'REAL_WORLD_CONTAMINATION', 'repair two evidence')
+      ],
+      repairResponses: [xml(7, 'REPAIR_ONE'), xml(7, 'REPAIR_TWO')]
+    });
+    const entries = run.logs.map((message, index) => ({
+      id: `diag_${index}`, timestamp: new Date(index * 1000), message, type: 'info' as const
+    }));
+    const canaryEntries = formatSemanticQaDiagnosticLines(
+      diagnosticFailure(DIAGNOSTIC_CANARIES.join(' / ')), diagnosticControl()
+    ).map((message, index) => ({
+      id: `canary_${index}`, timestamp: new Date(index * 1000), message, type: 'info' as const
+    }));
+    const exported = buildLogFileContent([...entries, ...canaryEntries]);
+    expect(exported).toContain('type=PLAN_VIOLATION');
+    expect(exported).toContain('type=CHRONOLOGY_CONTRADICTION');
+    expect(exported).toContain('type=REAL_WORLD_CONTAMINATION');
+    expect(exported).toContain('evidence=repair two evidence');
+    for (const token of DIAGNOSTIC_CANARIES) expect(exported).not.toContain(token);
+  });
+
+  test('16. malformed optional diagnostic fields do not crash or weaken a blocking verdict', async () => {
+    const result = await runSemanticValidation('view', async () => JSON.stringify({
+      pass: false,
+      violations: [{
+        type: 'PLAN_VIOLATION', severity: 'HIGH', message: 'Still blocking.', chapterNumber: 'bad',
+        evidence: { malformed: true }, suggestedRepair: 42, relatedRuleId: [], relatedCharacter: false
+      }]
+    }));
+    expect(result).toMatchObject({ pass: false, status: 'FAIL', attempts: 1 });
+    expect(result.violations[0]).toMatchObject({ message: 'Still blocking.', evidence: undefined, chapterNumber: undefined });
+  });
+
+  test('17. persisted validation diagnostics retain related identifiers', () => {
+    const { bible, control } = fixture();
+    const parsed = parseSetupFileContent(JSON.stringify({
+      importType: 'FULL_PROJECT', seedTitle: bible.seedTitle, storyControl: control,
+      storyState: state(control, 7), memoryIndex: [], chapters: [],
+      lastValidationResult: {
+        ...diagnosticFailure('safe detail'),
+        violations: [{
+          type: 'KNOWLEDGE_LEAK', severity: 'HIGH', chapterNumber: 7, message: 'Unsupported fact.',
+          evidence: 'Short excerpt.', suggestedRepair: 'Remove certainty.',
+          relatedRuleId: 'rule_7', relatedCharacter: 'Lan', relatedThreadId: 'river_mystery'
+        }]
+      }
+    }));
+    expect(parsed?.lastValidationResult?.violations[0]).toMatchObject({
+      relatedRuleId: 'rule_7', relatedCharacter: 'Lan', relatedThreadId: 'river_mystery'
+    });
+  });
+
+  test('18. user-facing diagnostic state contains no raw security canary', () => {
+    const combined = DIAGNOSTIC_CANARIES.join(' / ');
+    const safeState = sanitizeValidationResultForDiagnostics(diagnosticFailure(combined), diagnosticControl());
+    const serialized = JSON.stringify(safeState);
+    for (const token of DIAGNOSTIC_CANARIES) expect(serialized).not.toContain(token);
+  });
+
+  test('19. API credentials are redacted from persisted diagnostic text', () => {
+    const apiKey = 'AIza1234567890abcdefghijklmnop';
+    const logs = formatSemanticQaDiagnosticLines(diagnosticFailure(apiKey), diagnosticControl()).join('\n');
+    expect(logs).not.toContain(apiKey);
+    expect(logs).toContain('[REDACTED_API_KEY]');
+  });
+});
 
 describe('Story Engine Task 5 - production pipeline acceptance', () => {
   test('happy path Ch7-8 runs the production orchestration and commits exactly two coherent chapters', async () => {

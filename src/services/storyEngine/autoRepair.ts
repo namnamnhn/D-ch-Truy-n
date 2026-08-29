@@ -1,7 +1,7 @@
 import { CreativeChapter } from '../../types';
 import { BatchPlan, StoryControl, StoryViolation, StoryViolationType } from './types';
 import { validateWriterOutput } from './writer';
-import { getAllExposureRules, getCharacterAccess, getWorldFactGateChapter } from './storyAccess';
+import { collectHiddenStoryStrings, redactHiddenStoryText } from './diagnostics';
 
 export interface SafeRepairViolation {
   type: StoryViolationType;
@@ -10,76 +10,6 @@ export interface SafeRepairViolation {
   issue: string;
   evidence?: string;
   instruction: string;
-}
-
-function collectSecretStrings(value: unknown, output = new Set<string>()): Set<string> {
-  if (typeof value === 'string') {
-    if (value.trim().length >= 4) output.add(value.trim());
-  } else if (Array.isArray(value)) {
-    value.forEach(item => collectSecretStrings(item, output));
-  } else if (value && typeof value === 'object') {
-    Object.values(value).forEach(item => collectSecretStrings(item, output));
-  }
-  return output;
-}
-
-function hiddenStrings(control: StoryControl, chapters: number[] = []): Set<string> {
-  const secrets = collectSecretStrings(control.authorOnlySecrets || []);
-  const targetChapter = chapters.length ? Math.max(...chapters) : undefined;
-  for (const rawThread of control.mysteryThreads || []) {
-    if (rawThread && typeof rawThread === 'object' && !Array.isArray(rawThread)) {
-      collectSecretStrings((rawThread as Record<string, unknown>).actualTruth, secrets);
-    }
-  }
-  for (const fact of control.worldFacts || []) {
-    collectSecretStrings(fact.secretTruth, secrets);
-    if (fact.visibility !== 'always' || fact.scope !== 'public' || getWorldFactGateChapter(fact) > 1) {
-      collectSecretStrings(fact.fact, secrets);
-    }
-  }
-  for (const gate of control.spoilerGates || []) collectSecretStrings(gate.description, secrets);
-  for (const character of Object.values(control.characterRegistry || {})) {
-    if (targetChapter === undefined) {
-      collectSecretStrings(character.forbiddenSpoilers, secrets);
-      continue;
-    }
-    const access = getCharacterAccess(control, character, targetChapter);
-    if (!access.canMention) {
-      collectSecretStrings(character, secrets);
-    } else if (!access.canAppearDirectly) {
-      collectSecretStrings({
-        aliases: character.aliases,
-        aliasSet: character.aliasSet,
-        role: character.role,
-        gender: character.gender,
-        age: character.age,
-        appearance: character.appearance,
-        personality: character.personality,
-        coreMotivation: character.coreMotivation,
-        forbiddenSpoilers: character.forbiddenSpoilers,
-        restrictions: character.restrictions
-      }, secrets);
-    }
-  }
-  for (const arc of control.arcs || []) {
-    collectSecretStrings(arc.forbiddenSpoilers, secrets);
-    if (targetChapter !== undefined && arc.startChapter > targetChapter) collectSecretStrings(arc, secrets);
-  }
-  for (const rule of getAllExposureRules(control)) {
-    collectSecretStrings(rule.forbiddenEvidence, secrets);
-    collectSecretStrings(rule.forbiddenInferences, secrets);
-  }
-  return secrets;
-}
-
-function redact(text: string | undefined, secrets: Set<string>): string | undefined {
-  if (!text) return undefined;
-  let safe = text;
-  for (const secret of [...secrets].sort((left, right) => right.length - left.length)) {
-    const escaped = secret.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    safe = safe.replace(new RegExp(escaped, 'giu'), '[HIDDEN_DETAIL]');
-  }
-  return safe;
 }
 
 const genericSensitiveRepairs: Partial<Record<StoryViolationType, { issue: string; instruction: string }>> = {
@@ -120,17 +50,17 @@ const genericSensitiveRepairs: Partial<Record<StoryViolationType, { issue: strin
 export function buildSafeRepairRequest(violations: StoryViolation[], control: StoryControl): SafeRepairViolation[] {
   const chapters = violations.map(violation => violation.chapterNumber ?? violation.chapter).filter((chapter): chapter is number =>
     typeof chapter === 'number' && Number.isInteger(chapter) && chapter > 0);
-  const secrets = hiddenStrings(control, chapters);
+  const secrets = collectHiddenStoryStrings(control, chapters);
   return violations.map(violation => {
     const generic = genericSensitiveRepairs[violation.type];
     return {
       type: violation.type,
       severity: violation.severity,
       chapterNumber: violation.chapterNumber ?? violation.chapter,
-      issue: generic?.issue || redact(violation.message || violation.reason, secrets) || 'The chapter failed story QA.',
-      evidence: generic ? undefined : redact(violation.evidence || violation.quoteOrDescription, secrets),
+      issue: generic?.issue || redactHiddenStoryText(violation.message || violation.reason, secrets) || 'The chapter failed story QA.',
+      evidence: generic ? undefined : redactHiddenStoryText(violation.evidence || violation.quoteOrDescription, secrets),
       instruction: generic?.instruction
-        || redact(violation.suggestedRepair || violation.repairInstruction, secrets)
+        || redactHiddenStoryText(violation.suggestedRepair || violation.repairInstruction, secrets)
         || 'Rewrite the affected passage to follow the approved plan and Writer View.'
     };
   });
@@ -144,7 +74,7 @@ export function buildRepairPrompt(
 ): string {
   const chapters = rejectedChapters.map(chapter => chapter.chapterNumber).filter((chapter): chapter is number =>
     typeof chapter === 'number' && Number.isInteger(chapter) && chapter > 0);
-  const secrets = hiddenStrings(control, chapters);
+  const secrets = collectHiddenStoryStrings(control, chapters);
   const safeRequest = buildSafeRepairRequest(violations, control);
   const prompt = `${writerContext}
 
@@ -155,7 +85,7 @@ ${JSON.stringify(safeRequest, null, 2)}
 ${rejectedChapters.map(chapter => `=== ${chapter.title} ===\n${chapter.content}`).join('\n\n')}
 
 Rewrite the complete chapter. Preserve approved events and output only the required CHAPTER envelope.`;
-  return redact(prompt, secrets) || '';
+  return redactHiddenStoryText(prompt, secrets) || '';
 }
 
 export async function repairBatchOutput(

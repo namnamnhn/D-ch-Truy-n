@@ -24,6 +24,7 @@ import { splitChaptersByArc, validateArcRanges } from './storyAccess';
 import { makeStoryViolation } from './semanticValidator';
 import { getStoryModelRoute } from './modelRouting';
 import { compactMemoryIndex } from './memoryManager';
+import { formatSemanticQaDiagnosticLines } from './diagnostics';
 
 export interface PipelineOptions {
   bible: StoryBible;
@@ -110,6 +111,18 @@ function isRepairable(result: ValidationResult): boolean {
   if (result.status !== 'FAIL') return false;
   if (result.violations.some(violation => violation.severity === 'CRITICAL')) return false;
   return result.violations.some(violation => violation.severity === 'MEDIUM' || violation.severity === 'HIGH');
+}
+
+function logSemanticQaResult(
+  result: ValidationResult,
+  control: StoryControl,
+  onLog: (message: string) => void,
+  repairAttempt?: number
+): void {
+  const repairSuffix = repairAttempt === undefined ? '' : ` repairAttempt=${repairAttempt}`;
+  onLog(`[Semantic QA] role=${result.modelRole || 'semantic-validator'} attempts=${result.attempts || 0}${repairSuffix} status=${result.status} violations=${result.violations.map(violation => `${violation.type}:${violation.severity}`).join(',') || 'none'}`);
+  if (result.status === 'PASS') return;
+  for (const detail of formatSemanticQaDiagnosticLines(result, control)) onLog(detail);
 }
 
 function validationFailureMessage(result: ValidationResult, repairCount: number, maxRepairs: number): string {
@@ -300,7 +313,7 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
   let validationResult = await validateBatchOutput(
     generatedChapters, batchPlan, control, currentState, bible, semanticRunner, existingChapters
   );
-  onLog(`[Semantic QA] role=${validationResult.modelRole || 'semantic-validator'} attempts=${validationResult.attempts || 0} status=${validationResult.status} violations=${validationResult.violations.map(violation => `${violation.type}:${violation.severity}`).join(',') || 'none'}`);
+  logSemanticQaResult(validationResult, control, onLog);
   let repairCount = 0;
   const maxRepairs = 2;
   while (isRepairable(validationResult) && repairCount < maxRepairs) {
@@ -336,7 +349,7 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
       generatedChapters, batchPlan, control, currentState, bible, semanticRunner, existingChapters
     );
     validationResult.repairAttempts = repairCount;
-    onLog(`[Semantic QA] role=${validationResult.modelRole || 'semantic-validator'} attempts=${validationResult.attempts || 0} repairAttempt=${repairCount} status=${validationResult.status} violations=${validationResult.violations.map(violation => `${violation.type}:${violation.severity}`).join(',') || 'none'}`);
+    logSemanticQaResult(validationResult, control, onLog, repairCount);
   }
   if (!validationResult.pass) {
     const message = validationFailureMessage(validationResult, repairCount, maxRepairs);
