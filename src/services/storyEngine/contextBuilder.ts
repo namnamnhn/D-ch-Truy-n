@@ -4,10 +4,13 @@ import {
   BatchPlan,
   ChapterMemory,
   ChapterPlan,
+  InBatchContinuityLock,
   StoryBible,
   StoryControl,
   StoryState
 } from './types';
+import { createEmptyInBatchContinuityLock, extendInBatchContinuityLock, formatInBatchContinuityLock } from './continuityLock';
+import { createOutputLanguageContract, formatOutputLanguageContract } from './languageContract';
 import { calculateArcProgress } from './arcController';
 import { formatMemoriesForContext, retrieveRelevantMemories, sanitizeMemoriesForReader } from './memoryManager';
 import {
@@ -47,6 +50,7 @@ export interface PlannerView {
 export interface WriterView extends Omit<PlannerView, 'kind'> {
   kind: 'writer';
   approvedPlan: Partial<ChapterPlan>;
+  inBatchContinuityLock: InBatchContinuityLock;
 }
 
 export interface ValidatorView {
@@ -177,7 +181,8 @@ export function createWriterView(
   state: StoryState,
   memoryIndex: ChapterMemory[],
   chapter: number,
-  recentChapters: CreativeChapter[]
+  recentChapters: CreativeChapter[],
+  continuityLock: InBatchContinuityLock = createEmptyInBatchContinuityLock()
 ): WriterView {
   const planner = createPlannerView(bible, control, state, memoryIndex, chapter, recentChapters);
   const approvedPlan = projectApprovedChapterPlan(plan, chapter);
@@ -192,7 +197,8 @@ export function createWriterView(
     ...planner,
     kind: 'writer',
     storyState: { ...planner.storyState, characterStates: povSafeStates },
-    approvedPlan
+    approvedPlan,
+    inBatchContinuityLock: continuityLock
   };
 }
 
@@ -245,19 +251,25 @@ export function buildWriterContext(
   memoryIndex: ChapterMemory[],
   nextChapter: number,
   batchSize: number,
-  recentChapters: CreativeChapter[]
+  recentChapters: CreativeChapter[],
+  continuityLock: InBatchContinuityLock = createEmptyInBatchContinuityLock()
 ): string {
   const requested = plan.chapters
     .map(chapter => chapter.chapterNumber)
     .filter(chapter => chapter >= nextChapter && chapter < nextChapter + batchSize);
   const chapters = requested.length ? requested : [nextChapter];
   const views = chapters.map(chapter => createWriterView(
-    bible, control, plan, state, memoryIndex, chapter, recentChapters
+    bible, control, plan, state, memoryIndex, chapter, recentChapters, continuityLock
   ));
   const projectionPayload = views.map(({ relevantMemories: _relevantMemories, ...view }) => view);
   const uniqueMemories = Array.from(new Map(views.flatMap(view => view.relevantMemories)
     .map(memory => [memory.id || `chapter_${memory.chapterNumber}`, memory])).values());
+  const languageContract = createOutputLanguageContract(control, bible);
   return `=== LONG-FORM STORY ENGINE V3: WRITER PROJECTION ===
+
+${formatOutputLanguageContract(languageContract)}
+
+${formatInBatchContinuityLock(continuityLock)}
 
 [DANH SÁCH CẤM KỴ TUYỆT ĐỐI]
 Các gate đã được cưỡng chế bằng projection dữ liệu; payload author-only/locked không được chuyển cho Writer.
@@ -281,23 +293,31 @@ export function buildValidatorContext(
   const chapters = generated.length
     ? generated.map((chapter, index) => chapter.chapterNumber || startChapter + index)
     : [startChapter];
-  const views = chapters.map((chapter, index) => createValidatorView(
-    control,
-    plan,
-    state,
-    chapter,
-    generated[index] || (typeof output === 'string' ? output : undefined),
-    generated.filter((_, adjacentIndex) => adjacentIndex !== index),
-    priorChapters.slice(-3),
-    retrieveRelevantMemories(memoryIndex, {
-      currentChapter: chapter,
-      currentArcId: getArcForChapter(control, chapter).id,
-      threadIds: state.unresolvedThreads,
-      factIds: (state.knowledgeLedger || []).map(entry => entry.factId),
-      seedIds: (state.longTermSeeds || []).filter(seed => seed.status !== 'resolved').map(seed => seed.id),
-      injuryIds: Object.values(state.characterStates || {}).flatMap(character => character.injuries || [])
-        .filter(injury => injury.status !== 'recovered').map(injury => injury.id || injury.type)
-    }, 6)
-  ));
+  let continuityLock = createEmptyInBatchContinuityLock();
+  const views = chapters.map((chapter, index) => {
+    const view = createValidatorView(
+      control,
+      plan,
+      state,
+      chapter,
+      generated[index] || (typeof output === 'string' ? output : undefined),
+      generated.filter((_, adjacentIndex) => adjacentIndex !== index),
+      priorChapters.slice(-3),
+      retrieveRelevantMemories(memoryIndex, {
+        currentChapter: chapter,
+        currentArcId: getArcForChapter(control, chapter).id,
+        threadIds: state.unresolvedThreads,
+        factIds: (state.knowledgeLedger || []).map(entry => entry.factId),
+        seedIds: (state.longTermSeeds || []).filter(seed => seed.status !== 'resolved').map(seed => seed.id),
+        injuryIds: Object.values(state.characterStates || {}).flatMap(character => character.injuries || [])
+          .filter(injury => injury.status !== 'recovered').map(injury => injury.id || injury.type)
+      }, 6)
+    );
+    const scoped = { ...view, inBatchContinuityLock: continuityLock };
+    const generatedChapter = generated[index];
+    const chapterPlan = plan.chapters.find(candidate => candidate.chapterNumber === chapter);
+    if (generatedChapter && chapterPlan) continuityLock = extendInBatchContinuityLock(continuityLock, generatedChapter, chapterPlan);
+    return scoped;
+  });
   return `=== STORY ENGINE V3: CHAPTER-SCOPED VALIDATOR VIEWS ===\n${JSON.stringify(views, null, 2)}`;
 }

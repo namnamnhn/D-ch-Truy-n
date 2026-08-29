@@ -30,6 +30,8 @@ function semanticChecksFor(violations: StoryViolation[]) {
   return {
     characterGating: !types.has('CHARACTER_GATE'),
     worldFactContinuity: !types.has('WORLD_FACT_CONTRADICTION')
+      && !types.has('FACT_CONTRADICTION')
+      && !types.has('REPEATED_DISCOVERY')
       && !types.has('WORLD_FACT_GATE_VIOLATION')
       && !types.has('LOCATION_CANON_CONTRADICTION'),
     spoilerContainment: !types.has('SPOILER_LEAK')
@@ -201,7 +203,9 @@ Evaluate these distinct failure classes:
 - PREMATURE_EVIDENCE: prose directly exposes evidence forbidden at this chapter.
 - PREMATURE_INFERENCE / READER_KNOWLEDGE_OVEREXPOSURE: prose enables conclusions above the active inference or reader ceiling.
 - MYSTERY_STAGE_VIOLATION / PREMATURE_MYSTERY_RESOLUTION: mystery knowledge or resolution advances beyond the active stage.
-- CHRONOLOGY_CONTRADICTION: relative time, elapsed duration, ordering, or event/injury age conflicts with supplied context. Do not flag when context is insufficient.
+- FACT_CONTRADICTION: the same established entity, quantity, identity, condition, or concrete fact changes without a story event or approved justification. This is not a chronology issue merely because the facts occur in different chapters.
+- REPEATED_DISCOVERY: a discovery already completed or known is presented again as a first discovery. Do not flag explicit re-verification, acknowledged doubt, or another character independently learning it when the approved plan supports that framing.
+- CHRONOLOGY_CONTRADICTION: relative time, elapsed duration, event ordering, or date/time conflicts with supplied context. Reserve this class for temporal inconsistency; do not use it for changed quantities or repeated discoveries.
 - LOCATION_CANON_CONTRADICTION: a place's identity or transition conflicts with canon/state.
 - CHARACTER_SKILL_DRIFT / COMBAT_POWER_VIOLATION: demonstrated capability conflicts with the canonical profile, restrictions, or human/world limits.
 - OPPONENT_COMPETENCE_FAILURE: victory is implausibly cheap given numbers, weapons, training, terrain, surprise, tactics, adaptation, injuries, and cost.

@@ -2,6 +2,7 @@ import { CreativeChapter } from '../../types';
 import { BatchPlan, StoryControl, StoryViolation, StoryViolationType } from './types';
 import { validateWriterOutput } from './writer';
 import { collectHiddenStoryStrings, redactHiddenStoryText } from './diagnostics';
+import { createOutputLanguageContract } from './languageContract';
 
 export interface SafeRepairViolation {
   type: StoryViolationType;
@@ -44,6 +45,22 @@ const genericSensitiveRepairs: Partial<Record<StoryViolationType, { issue: strin
   KNOWLEDGE_LEAK: {
     issue: 'A character knows something without an established source.',
     instruction: 'Remove the unsupported certainty or add a plan-consistent, reader-visible source already available in the Writer View.'
+  },
+  FACT_CONTRADICTION: {
+    issue: 'A concrete fact conflicts with earlier accepted prose.',
+    instruction: 'Preserve the established fact in the in-batch continuity lock. Modify only the conflicting later prose unless the approved plan explicitly requires a change event.'
+  },
+  REPEATED_DISCOVERY: {
+    issue: 'A completed discovery is presented again as first-time information.',
+    instruction: 'Acknowledge prior knowledge. Convert the repeated first-discovery scene into plan-approved continuation, explicit re-verification, or a new consequence without repeating the reveal.'
+  },
+  REAL_WORLD_CONTAMINATION: {
+    issue: 'The prose contains language or world contamination outside the configured allowance.',
+    instruction: 'Replace only the contaminating fragment with natural target-language, world-native prose without changing any story fact.'
+  },
+  WORD_COUNT_DEFICIT: {
+    issue: 'The chapter is below the configured structural minimum length.',
+    instruction: 'Expand the existing approved plan through action, sensory detail, dialogue, reasoning, character interaction, tactical friction, environment, and consequences. Do not add filler, duplicate exposition, a new major plot event, a mystery dump, a new major character, or a forced cliffhanger.'
   }
 };
 
@@ -104,6 +121,11 @@ Do not infer or invent hidden facts. Fix every listed issue while preserving app
 Return only: <CHAPTER number="X" title="Chương X: Tiêu đề">complete prose</CHAPTER>`;
   const prompt = buildRepairPrompt(rejectedChapters, violations, writerContext, control);
   const rawOutput = await runner(prompt, systemInstruction);
-  const parsed = validateWriterOutput(rawOutput, requested);
+  const parsed = validateWriterOutput(rawOutput, requested, {
+    minimumWords: control.pacingRules?.minWordsPerChapter,
+    maximumWords: control.pacingRules?.maxWordsPerChapter,
+    softMinimumWords: control.settings?.softMinimumWords === true,
+    outputLanguage: createOutputLanguageContract(control)
+  });
   return { chapters: parsed.chapters, rawOutput };
 }

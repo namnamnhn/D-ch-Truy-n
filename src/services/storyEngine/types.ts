@@ -371,6 +371,42 @@ export interface BatchPlan {
   requestedChapterNumbers?: number[];
 }
 
+// Ephemeral, reader-safe continuity extracted only from structurally accepted prose
+// inside the currently requested batch. It is never part of StoryState persistence.
+export interface InBatchEstablishedFact {
+  id: string;
+  subject: string;
+  predicate: string;
+  value: string;
+  unit?: string;
+  establishedChapter: number;
+  established: true;
+  evidence: string;
+}
+
+export interface InBatchCompletedDiscovery {
+  id: string;
+  description: string;
+  completedChapter: number;
+  discoveredBy?: string;
+  acknowledgedAsPrior: true;
+}
+
+export interface InBatchKnownFact {
+  character: string;
+  fact: string;
+  learnedChapter: number;
+}
+
+export interface InBatchContinuityLock {
+  establishedFacts: InBatchEstablishedFact[];
+  completedDiscoveries: InBatchCompletedDiscovery[];
+  knownByCharacter: InBatchKnownFact[];
+  objectFacts: InBatchEstablishedFact[];
+  locationFacts: InBatchEstablishedFact[];
+  timeFacts: InBatchEstablishedFact[];
+}
+
 export type CharacterAccessLevel = 'LOCKED' | 'MENTION_ONLY' | 'DIRECT_ALLOWED' | 'POV_ALLOWED' | 'MAJOR_FOCUS_ALLOWED';
 
 export interface CharacterAccess {
@@ -467,6 +503,8 @@ export const STORY_VIOLATION_TYPES = [
   'PREMATURE_MYSTERY_RESOLUTION',
   'REAL_WORLD_CONTAMINATION',
   'ANACHRONISM',
+  'FACT_CONTRADICTION',
+  'REPEATED_DISCOVERY',
   'CHRONOLOGY_CONTRADICTION',
   'LOCATION_CANON_CONTRADICTION',
   'CHARACTER_SKILL_DRIFT',

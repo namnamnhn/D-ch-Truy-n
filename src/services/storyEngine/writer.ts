@@ -1,7 +1,19 @@
 import { Character, CreativeChapter } from '../../types';
 import { BatchPlan } from './types';
+import { findUnexpectedScriptContamination, OutputLanguageContract } from './languageContract';
 
 export const MAX_WRITER_ATTEMPTS = 3;
+
+export interface WriterStructuralContract {
+  minimumWords?: number;
+  maximumWords?: number;
+  softMinimumWords?: boolean;
+  outputLanguage?: OutputLanguageContract;
+}
+
+export function countProseWords(content: string): number {
+  return content.match(/[\p{L}\p{N}]+(?:['’_-][\p{L}\p{N}]+)*/gu)?.length || 0;
+}
 
 export class WriterOutputValidationError extends Error {
   readonly violations: string[];
@@ -134,7 +146,11 @@ export function parseChaptersAndMetadata(rawText: string): {
   return { chapters: parsed.chapters.filter(chapter => chapter.content), newCharacters: parsed.newCharacters, storySummary: parsed.storySummary };
 }
 
-export function validateWriterOutput(rawText: string, requestedChapterNumbers: number[]): {
+export function validateWriterOutput(
+  rawText: string,
+  requestedChapterNumbers: number[],
+  contract: WriterStructuralContract = {}
+): {
   chapters: CreativeChapter[];
   newCharacters: Character[];
   storySummary?: string;
@@ -157,6 +173,18 @@ export function validateWriterOutput(rawText: string, requestedChapterNumbers: n
   for (const chapter of parsed.chapters) {
     if (!chapter.content.trim()) violations.push(`Chương ${chapter.chapterNumber ?? '?'} có nội dung rỗng.`);
     if (!chapter.title.trim()) violations.push(`Chương ${chapter.chapterNumber ?? '?'} thiếu title.`);
+    const words = countProseWords(chapter.content);
+    if (!contract.softMinimumWords && contract.minimumWords !== undefined && words < contract.minimumWords) {
+      violations.push(`Chapter ${chapter.chapterNumber ?? '?'} has ${words} words; configured minimum is ${contract.minimumWords}. Expand the existing approved plan without adding a new major event, filler, recap, duplicate exposition, a mystery dump, a new major character, or a forced cliffhanger.`);
+    }
+    if (contract.maximumWords !== undefined && words > contract.maximumWords) {
+      violations.push(`Chapter ${chapter.chapterNumber ?? '?'} has ${words} words; configured maximum is ${contract.maximumWords}. Tighten the approved scenes without removing required events.`);
+    }
+    if (contract.outputLanguage?.strict) {
+      for (const finding of findUnexpectedScriptContamination(chapter.content, contract.outputLanguage)) {
+        violations.push(`Chapter ${chapter.chapterNumber ?? '?'} contains unexpected ${finding.script} script fragment "${finding.fragment}" outside the canonical/terminology allowlist.`);
+      }
+    }
   }
   if (violations.length) throw new WriterOutputValidationError(violations);
   return { chapters: parsed.chapters, newCharacters: parsed.newCharacters, storySummary: parsed.storySummary };
@@ -165,7 +193,8 @@ export function validateWriterOutput(rawText: string, requestedChapterNumbers: n
 export async function generateChaptersProse(
   writerContext: string,
   batchPlan: BatchPlan,
-  runner: (prompt: string, sys: string) => Promise<string>
+  runner: (prompt: string, sys: string) => Promise<string>,
+  contract: WriterStructuralContract = {}
 ): Promise<{
   rawOutput: string;
   chapters: CreativeChapter[];
@@ -175,15 +204,18 @@ export async function generateChaptersProse(
   const requested = batchPlan.chapters.map(chapter => chapter.chapterNumber);
   let violations: string[] = [];
   for (let attempt = 1; attempt <= MAX_WRITER_ATTEMPTS; attempt++) {
+    const lengthContract = contract.minimumWords !== undefined || contract.maximumWords !== undefined
+      ? `\nLENGTH CONTRACT: each chapter must contain${contract.minimumWords !== undefined && !contract.softMinimumWords ? ` at least ${contract.minimumWords} words` : ''}${contract.maximumWords !== undefined ? `${contract.minimumWords !== undefined && !contract.softMinimumWords ? ' and' : ''} at most ${contract.maximumWords} words` : ''}. Expand only the approved plan through action, sensory detail, dialogue, reasoning, character interaction, tactical friction, environment, and consequences. Do not use filler, repeated recap/exposition, new major plot beats, premature mystery reveals, new major characters, or a forced cliffhanger.`
+      : '';
     const sys = `Bạn là Writer của Story Engine V3. Viết chính xác các chương [${requested.join(', ')}], mỗi chương đúng một lần.
 Output chỉ gồm envelope XML theo mẫu:
 <CHAPTER number="X" title="Chương X: Tiêu đề">Nội dung văn xuôi không rỗng</CHAPTER>
-Sau các chapter có thể có NEW_CHARACTER tự đóng và một STORY_SUMMARY. Không có control block hay prose ngoài envelope.${violations.length
+Sau các chapter có thể có NEW_CHARACTER tự đóng và một STORY_SUMMARY. Không có control block hay prose ngoài envelope.${lengthContract}${violations.length
   ? `\nOutput trước bị reject. Hãy sửa các lỗi cấu trúc sau:\n${violations.join('\n')}` : ''}`;
     const prompt = `${writerContext}\n\nViết đúng output contract cho [${requested.join(', ')}].`;
     const rawOutput = await runner(prompt, sys);
     try {
-      const parsed = validateWriterOutput(rawOutput, requested);
+      const parsed = validateWriterOutput(rawOutput, requested, contract);
       return { rawOutput, ...parsed };
     } catch (error) {
       violations = error instanceof WriterOutputValidationError ? error.violations : [String(error)];

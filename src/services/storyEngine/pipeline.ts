@@ -21,10 +21,12 @@ import { repairBatchOutput } from './autoRepair';
 import { extractAndMergeState } from './stateExtractor';
 import { buildWriterContext } from './contextBuilder';
 import { splitChaptersByArc, validateArcRanges } from './storyAccess';
-import { makeStoryViolation } from './semanticValidator';
+import { makeStoryViolation, qaUnavailableResult } from './semanticValidator';
 import { getStoryModelRoute } from './modelRouting';
 import { compactMemoryIndex } from './memoryManager';
 import { formatSemanticQaDiagnosticLines } from './diagnostics';
+import { createOutputLanguageContract } from './languageContract';
+import { createEmptyInBatchContinuityLock, extendInBatchContinuityLock } from './continuityLock';
 
 export interface PipelineOptions {
   bible: StoryBible;
@@ -226,11 +228,15 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
     onProgress({ stage, message, progress, currentChapter: nextChapter, totalChapters: targetEndChapter, retryCount }, progress);
   };
   const fastRunner = aiFastRunner || (async (prompt: string) => prompt);
-  const proRunner = aiProRunner || fastRunner;
   const roleRunner = (role: StoryModelRole) => {
     const route = getStoryModelRoute(role, { FAST: Boolean(aiFastRunner), QUALITY: Boolean(aiProRunner) });
     onLog(`[ModelRouting] role=${role} tier=${route.tier} status=${route.status}`);
-    return route.tier === 'QUALITY' ? proRunner : fastRunner;
+    if (route.tier === 'QUALITY') {
+      if (aiProRunner) return aiProRunner;
+      if (route.allowFastFallback && aiFastRunner) return aiFastRunner;
+      throw new Error(`Required QUALITY runner is unavailable for ${role}; FAST fallback is not permitted.`);
+    }
+    return fastRunner;
   };
   const semanticSource = aiSemanticRunner || aiProRunner;
   const semanticRunner = semanticSource
@@ -250,6 +256,10 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
     : { ...createInitialStoryState(control, existingChapters.length, bible.characters), continuitySummary: bible.continuitySummary };
   const currentMemories = compatibleMemories(existingMemories, control.sourceHash);
   let batchPlan = emptyBatchPlan(requested);
+  if (!aiProRunner) {
+    const validation = qaUnavailableResult(0, 'Required QUALITY model roles are unavailable; FAST fallback is not permitted.');
+    return failResult('Không có model QUALITY hợp lệ; batch chưa được tạo hoặc lưu.', nextChapter, control, currentState, bible, batchPlan, 0, validation);
+  }
   try {
     validateArcRanges(control);
     const segments = splitChaptersByArc(control, requested);
@@ -283,20 +293,33 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
   const summaries: string[] = [];
   const writerContexts = new Map<number, string>();
   const rawOutputs = new Map<number, string>();
+  let continuityLock = createEmptyInBatchContinuityLock();
+  const writerContract = {
+    minimumWords: control.pacingRules?.minWordsPerChapter,
+    maximumWords: control.pacingRules?.maxWordsPerChapter,
+    softMinimumWords: control.settings?.softMinimumWords === true,
+    outputLanguage: createOutputLanguageContract(control, bible)
+  };
   try {
     // No chapter is persisted here; all outputs remain local until the entire batch passes.
     for (const chapter of requested) {
       const chapterPlan = singleChapterPlan(batchPlan, chapter);
       const writerContext = buildWriterContext(
         bible, control, chapterPlan, currentState, currentMemories, chapter, 1,
-        [...existingChapters, ...generatedChapters]
+        [...existingChapters, ...generatedChapters], continuityLock
       );
       writerContexts.set(chapter, writerContext);
-      const result = await generateChaptersProse(writerContext, chapterPlan, (prompt, sys) => roleRunner('WRITER')(prompt, sys));
+      const result = await generateChaptersProse(
+        writerContext,
+        chapterPlan,
+        (prompt, sys) => roleRunner('WRITER')(prompt, sys),
+        writerContract
+      );
       generatedChapters.push(...result.chapters);
       generatedCharacters.push(...result.newCharacters);
       if (result.storySummary) summaries.push(result.storySummary);
       rawOutputs.set(chapter, result.rawOutput);
+      continuityLock = extendInBatchContinuityLock(continuityLock, result.chapters[0], chapterPlan.chapters[0]);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -328,12 +351,31 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
       });
       if (chapterViolations.length === 0) continue;
       try {
+        let repairLock = createEmptyInBatchContinuityLock();
+        for (const prior of generatedChapters) {
+          const priorNumber = prior.chapterNumber || 0;
+          if (priorNumber >= chapter) break;
+          const priorPlan = batchPlan.chapters.find(candidate => candidate.chapterNumber === priorNumber);
+          if (priorPlan) repairLock = extendInBatchContinuityLock(repairLock, prior, priorPlan);
+        }
+        const repairWriterContext = buildWriterContext(
+          bible,
+          control,
+          singleChapterPlan(batchPlan, chapter),
+          currentState,
+          currentMemories,
+          chapter,
+          1,
+          [...existingChapters, ...generatedChapters.filter(candidate => (candidate.chapterNumber || 0) < chapter)],
+          repairLock
+        );
+        writerContexts.set(chapter, repairWriterContext);
         const repaired = await repairBatchOutput(
           [generatedChapters[index]],
           rawOutputs.get(chapter) || '',
           chapterViolations,
           singleChapterPlan(batchPlan, chapter),
-          writerContexts.get(chapter) || '',
+          repairWriterContext,
           control,
           (prompt, sys) => roleRunner('AUTO_REPAIR')(prompt, sys)
         );

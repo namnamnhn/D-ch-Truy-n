@@ -19,6 +19,13 @@ import {
   runSemanticValidation,
   SemanticRunner
 } from './semanticValidator';
+import { countProseWords } from './writer';
+import { createOutputLanguageContract, findUnexpectedScriptContamination } from './languageContract';
+import {
+  createEmptyInBatchContinuityLock,
+  extendInBatchContinuityLock,
+  findConcreteFactContradictions
+} from './continuityLock';
 
 function configuredBoolean(control: StoryControl, key: string): boolean {
   const value = control.settings?.[key];
@@ -76,6 +83,8 @@ export function validateDeterministicBatchOutput(
   collectConfiguredStrings(control.originality, new Set([
     'bannedphrases', 'forbiddenphrases', 'explicitbannedphrases'
   ]), bannedPhrases);
+  const outputLanguage = createOutputLanguageContract(control, bible);
+  let continuityLock = createEmptyInBatchContinuityLock();
 
   const actualNumbers = chapters.map((chapter, index) => chapterNumberOf(chapter, batchPlan.startChapter + index));
   if (actualNumbers.length !== requested.length
@@ -196,15 +205,35 @@ export function validateDeterministicBatchOutput(
       }));
     }
 
-    const wordCount = content.trim() ? content.trim().split(/\s+/).length : 0;
-    const minimum = control.pacingRules?.minWordsPerChapter || 1500;
-    if (wordCount < minimum) {
-      warnings.push(deterministicViolation({
-        type: 'WORD_COUNT_DEFICIT', severity: 'LOW', chapterNumber,
-        message: `Chapter has ${wordCount} words; configured minimum is ${minimum}.`,
-        suggestedRepair: 'Expand only plan-relevant action, description, or dialogue.'
+    for (const finding of findUnexpectedScriptContamination(content, outputLanguage)) {
+      violations.push(deterministicViolation({
+        type: 'REAL_WORLD_CONTAMINATION', severity: 'HIGH', chapterNumber,
+        message: `Chapter prose contains unexpected ${finding.script} script outside the configured language allowance.`,
+        evidence: finding.fragment,
+        suggestedRepair: 'Replace the contaminating fragment with natural target-language prose without changing story facts.'
       }));
     }
+
+    for (const contradiction of findConcreteFactContradictions(continuityLock, chapter)) {
+      violations.push(deterministicViolation({
+        type: 'FACT_CONTRADICTION', severity: 'HIGH', chapterNumber,
+        message: `An established concrete fact changed without an explicit story event: ${contradiction.established.subject}.${contradiction.established.predicate}.`,
+        evidence: contradiction.conflicting.evidence,
+        suggestedRepair: `Preserve the earlier established value ${contradiction.established.value}${contradiction.established.unit ? ` ${contradiction.established.unit}` : ''} and modify only the conflicting later prose unless the approved plan requires a change event.`
+      }));
+    }
+
+    const wordCount = countProseWords(content);
+    const minimum = control.pacingRules?.minWordsPerChapter ?? 1500;
+    if (wordCount < minimum) {
+      const target = configuredBoolean(control, 'softMinimumWords') ? warnings : violations;
+      target.push(deterministicViolation({
+        type: 'WORD_COUNT_DEFICIT', severity: configuredBoolean(control, 'softMinimumWords') ? 'LOW' : 'HIGH', chapterNumber,
+        message: `Chapter has ${wordCount} words; configured minimum is ${minimum}.`,
+        suggestedRepair: 'Expand the existing approved plan through action, sensory detail, dialogue, reasoning, character interaction, tactical friction, environment, and consequences. Do not add filler, duplicate exposition, a new major plot beat, or a premature reveal.'
+      }));
+    }
+    if (plan) continuityLock = extendInBatchContinuityLock(continuityLock, chapter, plan);
   }
 
   const activeInjuries = Object.values(state.characterStates || {}).flatMap(characterState =>

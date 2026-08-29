@@ -9,14 +9,26 @@ export const FAST_STORY_MODELS = [
 ] as const;
 
 export const QUALITY_STORY_MODELS = [
-  'gemini-3.1-pro-preview',
-  'gemini-3.7-flash',
-  'gemini-3.6-flash'
-] as const;
-
-export const STRICT_QUALITY_STORY_MODELS = [
   'gemini-3.1-pro-preview'
 ] as const;
+
+export interface StoryModelPolicy {
+  FAST: readonly string[];
+  QUALITY: readonly string[];
+}
+
+export const DEFAULT_STORY_MODEL_POLICY: StoryModelPolicy = {
+  FAST: FAST_STORY_MODELS,
+  QUALITY: QUALITY_STORY_MODELS
+};
+
+function approvedCandidatesForTier(tier: StoryModelTier, policy: StoryModelPolicy): string[] {
+  const requested = tier === 'QUALITY' ? policy.QUALITY : policy.FAST;
+  const oppositePolicy = new Set(tier === 'QUALITY' ? policy.FAST : policy.QUALITY);
+  const oppositeDefaults = new Set<string>(tier === 'QUALITY' ? FAST_STORY_MODELS : QUALITY_STORY_MODELS);
+  return [...new Set(requested)].filter(candidate =>
+    !oppositePolicy.has(candidate) && !oppositeDefaults.has(candidate));
+}
 
 const TIERS: Record<StoryModelRole, StoryModelTier> = {
   STORY_CONTROL_COMPILER: 'QUALITY',
@@ -59,11 +71,43 @@ export function getAllStoryModelRoutes(
   return (Object.keys(TIERS) as StoryModelRole[]).map(role => getStoryModelRoute(role, availability));
 }
 
-export function getStoryModelCandidates(role: StoryModelRole, lite = false): readonly string[] {
+export function getStoryModelCandidates(
+  role: StoryModelRole,
+  lite = false,
+  policy: StoryModelPolicy = DEFAULT_STORY_MODEL_POLICY
+): readonly string[] {
   const route = getStoryModelRoute(role);
-  if (role === 'STORY_VALIDATOR_SEMANTIC') return STRICT_QUALITY_STORY_MODELS;
-  if (route.tier === 'FAST' || (lite && route.allowFastFallback)) return FAST_STORY_MODELS;
-  return QUALITY_STORY_MODELS;
+  const tier = route.tier === 'FAST' || (lite && route.allowFastFallback) ? 'FAST' : 'QUALITY';
+  return approvedCandidatesForTier(tier, policy);
+}
+
+export function isStoryModelAllowedForRole(
+  role: StoryModelRole,
+  modelId: string,
+  policy: StoryModelPolicy = DEFAULT_STORY_MODEL_POLICY
+): boolean {
+  return getStoryModelCandidates(role, false, policy).includes(modelId);
+}
+
+export async function runApprovedStoryModelCandidates<T>(
+  role: StoryModelRole,
+  operation: (modelId: string) => Promise<T>,
+  policy: StoryModelPolicy = DEFAULT_STORY_MODEL_POLICY
+): Promise<T> {
+  const candidates = getStoryModelCandidates(role, false, policy);
+  if (candidates.length === 0) throw new Error(`No ${getStoryModelRoute(role).tier} candidate is configured for ${role}.`);
+  let finalError: unknown;
+  for (const candidate of candidates) {
+    if (!isStoryModelAllowedForRole(role, candidate, policy)) continue;
+    try {
+      return await operation(candidate);
+    } catch (error) {
+      finalError = error;
+    }
+  }
+  throw finalError instanceof Error
+    ? finalError
+    : new Error(`All approved ${getStoryModelRoute(role).tier} candidates are unavailable for ${role}.`);
 }
 
 export function canRunStoryRole(

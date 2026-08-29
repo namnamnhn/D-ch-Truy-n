@@ -18,5 +18,7 @@ export * from './blueprintParser';
 export * from './runtimeValidation';
 export * from './setupImport';
 export * from './modelRouting';
+export * from './languageContract';
+export * from './continuityLock';
 export * from './characterMerge';
 export * from './sanity';
