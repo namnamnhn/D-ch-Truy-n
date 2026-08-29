@@ -339,7 +339,7 @@ export const translateBatchStream = async (
         relPrevCtx = "";
     }
 
-    if(onLog) onLog(`[DEBUG] hasStrictSafetyError=${hasStrictSafetyError}, hasValidationError=${hasValidationError}, rescueTarget=${inferredRescueTarget || 'none'}, deepseekKey.length=${deepseekKey ? deepseekKey.length : 0}`);
+    if(onLog) onLog(`[DEBUG] hasStrictSafetyError=${hasStrictSafetyError}, hasValidationError=${hasValidationError}, rescueTarget=${inferredRescueTarget || 'none'}, deepseekByokConfigured=${hasDeepSeekKeyAvail}`);
 
     if (needsRescueFallback) {
         // FIX (kiểm tra Key trước khi dùng vệ tinh): chỉ chuyển hướng sang DeepSeek khi Key khả
@@ -614,6 +614,7 @@ CRITICAL: DO NOT TRANSLATE THE TAGS. ALWAYS OUTPUT THE EXACT TAGS (e.g. ${startT
             
             while (!isDone) {
                 if (shouldAbort && shouldAbort()) {
+                    await iterator.return?.();
                     throw new Error('ABORTED');
                 }
                 let timeoutId: NodeJS.Timeout | undefined;

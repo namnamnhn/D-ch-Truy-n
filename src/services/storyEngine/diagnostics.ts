@@ -1,6 +1,7 @@
 import { getAllExposureRules, getCharacterAccess, getWorldFactGateChapter } from './storyAccess';
 import { StoryControl, StoryValidationResult, StoryViolation } from './types';
 import { formatChapterPacingTarget, getChapterPacingTarget } from './pacingContract';
+import { redactProviderSecrets } from '../../utils/secretRedaction';
 
 const HIDDEN_DETAIL = '[HIDDEN_DETAIL]';
 const MAX_DIAGNOSTIC_TEXT_LENGTH = 600;
@@ -74,11 +75,7 @@ export function redactHiddenStoryText(text: string | undefined, secrets: Set<str
     safe = safe.replace(new RegExp(escaped, 'giu'), HIDDEN_DETAIL);
   }
   // Defense in depth: credentials are never valid QA evidence and must not reach persisted/exported logs.
-  safe = safe
-    .replace(/\bAIza[0-9A-Za-z_-]{20,}\b/g, '[REDACTED_API_KEY]')
-    .replace(/\bsk-[0-9A-Za-z_-]{16,}\b/g, '[REDACTED_API_KEY]')
-    .replace(/\b(Bearer\s+)[0-9A-Za-z._~+\/-]{16,}\b/gi, '$1[REDACTED_TOKEN]');
-  return safe;
+  return redactProviderSecrets(safe);
 }
 
 function diagnosticText(text: string | undefined, secrets: Set<string>): string | undefined {

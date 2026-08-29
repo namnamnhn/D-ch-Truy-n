@@ -4,7 +4,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { StoryInfo, FileItem, ModelQuota, BatchLimits, RatioLimits, CreativeState, SinoVietnameseState, FixErrorState } from '../types';
 import { DEFAULT_PROMPT, MODEL_CONFIGS } from '../constants';
 import { DEFAULT_RATIO_LIMITS } from '../constants/ratioLimits';
-import { loadFromStorage, saveToStorage, clearDatabase, saveBackupSnapshot } from '../utils/storage';
+import { loadFromStorage, saveToStorage, clearDatabase, saveBackupSnapshot, migratePersistedProviderCredentials } from '../utils/storage';
 import { quotaManager } from '../utils/quotaManager';
 import { base64ToFile, fileToBase64, reconcileStaleRescueLocks, reconcileStaleRawCount } from '../utils/fileHelpers';
 import { createSafeSetter } from './coreState/createSafeSetter';
@@ -59,9 +59,8 @@ export const useCoreState = (addToast: (msg: string, type: 'success'|'error'|'in
     const [enabledModels, setEnabledModels] = useState<string[]>(MODEL_CONFIGS.map(m => m.id));
     const [modelConfigs, setModelConfigs] = useState<ModelQuota[]>(MODEL_CONFIGS);
     // fix44: OpenRouter đã bị loại bỏ hoàn toàn khỏi hệ thống — chỉ còn DeepSeek làm vệ tinh.
-    const [deepseekKey, setDeepseekKey] = useState<string>(() => {
-        try { return localStorage.getItem('app_deepseek_key') || ''; } catch { return ''; }
-    });
+    // DeepSeek BYOK is deliberately memory-only for the active browser session.
+    const [deepseekKey, setDeepseekKey] = useState<string>('');
     const [deepseekModel, setDeepseekModel] = useState<string>(() => {
         try { return localStorage.getItem('app_deepseek_model') || 'deepseek-v4-flash'; } catch { return 'deepseek-v4-flash'; }
     });
@@ -171,9 +170,7 @@ export const useCoreState = (addToast: (msg: string, type: 'success'|'error'|'in
 
     const setModelConfigsSafe = useCallback(createSafeSetter<ModelQuota[]>('modelConfigs', setModelConfigs, stateRef), []);
 
-    const setDeepseekKeySafe = useCallback(createSafeSetter<string>('deepseekKey', setDeepseekKey, stateRef, (next) => {
-        try { localStorage.setItem('app_deepseek_key', next); } catch {}
-    }), []);
+    const setDeepseekKeySafe = useCallback(createSafeSetter<string>('deepseekKey', setDeepseekKey, stateRef), []);
 
     const setDeepseekModelSafe = useCallback(createSafeSetter<string>('deepseekModel', setDeepseekModel, stateRef, (next) => {
         try { localStorage.setItem('app_deepseek_model', next); } catch {}
@@ -190,6 +187,7 @@ export const useCoreState = (addToast: (msg: string, type: 'success'|'error'|'in
             return;
         }
         try {
+            await migratePersistedProviderCredentials();
             const data = await loadFromStorage(STORAGE_KEY);
             if (data) {
                 // FIX (fix21): dọn cờ isRescueLocked treo oan trên file đã COMPLETED trước khi
@@ -226,18 +224,11 @@ export const useCoreState = (addToast: (msg: string, type: 'success'|'error'|'in
                 delete (data as any).openRouterKey;
                 delete (data as any).openRouterModel;
 
-                let lsDeepseekKey: string | null = null;
                 let lsDeepseekModel: string | null = null;
                 try {
-                    lsDeepseekKey = localStorage.getItem('app_deepseek_key');
                     lsDeepseekModel = localStorage.getItem('app_deepseek_model');
                 } catch {}
-
-                if (lsDeepseekKey !== null) {
-                    setDeepseekKeySafe(lsDeepseekKey);
-                } else if (data.deepseekKey) {
-                    setDeepseekKeySafe(data.deepseekKey);
-                }
+                setDeepseekKeySafe('');
 
                 const actualDeepseekModel = lsDeepseekModel !== null ? lsDeepseekModel : data.deepseekModel;
                 if (actualDeepseekModel) {
@@ -402,6 +393,7 @@ export const useCoreState = (addToast: (msg: string, type: 'success'|'error'|'in
             }
             const newLastSaved = new Date();
             const dataToSave: any = { ...stateRef.current, lastSaved: newLastSaved.toISOString() };
+            delete dataToSave.deepseekKey;
             
             // Convert coverImage to base64 for safe storage (prevents DataCloneError in some browsers)
             if (dataToSave.coverImage instanceof File) {

@@ -3,6 +3,7 @@
 // hết Quota Gemini tạm thời) cho các tệp bị chặn.
 
 import { createKeyManager, ApiKeyStatus } from './keyManagerFactory';
+import { callDeepSeekGateway, openDeepSeekGatewayStream } from './providerGatewayClient';
 
 export type DeepSeekKeyStatus = ApiKeyStatus;
 
@@ -39,8 +40,6 @@ export const deepSeekKeyManager = createKeyManager(
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-const DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions";
-
 const estimateOutputTokens = (promptLen: number, sysLen: number, modelInfo: DeepSeekModelDef | null): number => {
     const estInputTokens = Math.ceil(promptLen / 2.5) + Math.ceil(sysLen / 2.5);
     let estimatedOutputTokens = Math.min(Math.ceil(promptLen / 2.5) + 1000, 16000);
@@ -65,10 +64,6 @@ export const fetchDeepSeek = async (
     deepSeekKeyManager.syncKeys(apiKeyStr);
 
     const keys = deepSeekKeyManager.getKeys();
-    if (keys.length === 0) {
-        throw new Error("DeepSeek API Key not provided.");
-    }
-
     const modelId = model.split(',')[0].trim() || 'deepseek-v4-flash';
     const modelInfo = getDeepSeekModelInfo(modelId);
     const estimatedOutputTokens = estimateOutputTokens(prompt.length, systemInstruction.length, modelInfo);
@@ -98,22 +93,12 @@ export const fetchDeepSeek = async (
     while (attempt < maxRetries) {
         const currentKey = deepSeekKeyManager.getCurrentKey();
         try {
-            const response = await fetch(DEEPSEEK_API_URL, {
-                method: "POST",
-                headers: {
-                    "Authorization": `Bearer ${currentKey}`,
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify(payload)
+            const data = await callDeepSeekGateway<any>({
+                provider: 'deepseek',
+                action: 'chat',
+                request: payload,
+                ...(currentKey ? { byokKey: currentKey } : {})
             });
-
-            if (!response.ok) {
-                const errObj = await response.json().catch(() => ({}));
-                const errMsg = errObj.error?.message || `DeepSeek API error: ${response.status} ${response.statusText}`;
-                throw new Error(errMsg);
-            }
-
-            const data = await response.json();
             if (onModelInfo) onModelInfo(modelId);
             deepSeekKeyManager.reportSuccess();
             return data.choices?.[0]?.message?.content || "";
@@ -155,10 +140,6 @@ export const fetchDeepSeekStream = async (
     deepSeekKeyManager.syncKeys(apiKeyStr);
 
     const keys = deepSeekKeyManager.getKeys();
-    if (keys.length === 0) {
-        throw new Error("DeepSeek API Key not provided.");
-    }
-
     const modelId = model.split(',')[0].trim() || 'deepseek-v4-flash';
     const modelInfo = getDeepSeekModelInfo(modelId);
 
@@ -180,29 +161,21 @@ export const fetchDeepSeekStream = async (
             }
             const estimatedOutputTokens = estimateOutputTokens(currentPrompt.length, systemInstruction.length, modelInfo);
 
-            const response = await fetch(DEEPSEEK_API_URL, {
-                method: "POST",
-                headers: {
-                    "Authorization": `Bearer ${currentKey}`,
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
+            const response = await openDeepSeekGatewayStream({
+                provider: 'deepseek',
+                action: 'stream',
+                request: {
                     model: modelId,
                     messages: [
                         { role: "system", content: systemInstruction },
                         { role: "user", content: currentPrompt }
                     ],
-                    stream: true,
                     temperature: 0.2,
                     max_tokens: estimatedOutputTokens,
                     ...(isThinkingToggleModel(modelId) ? { thinking: { type: 'disabled' } } : {})
-                })
+                },
+                ...(currentKey ? { byokKey: currentKey } : {})
             });
-
-            if (!response.ok) {
-                const errObj = await response.json().catch(() => ({}));
-                throw new Error(errObj.error?.message || `DeepSeek API error: ${response.status} ${response.statusText}`);
-            }
 
             if (!response.body) {
                 throw new Error("No response body from DeepSeek.");
@@ -307,4 +280,17 @@ export const fetchDeepSeekStream = async (
     }
 
     throw new Error(`DeepSeek stream failed after ${maxRetries} attempts. Last Error: ${lastError?.message}`);
+};
+
+export const testDeepSeekConnection = async (apiKey: string, model: string, signal?: AbortSignal): Promise<void> => {
+    await callDeepSeekGateway({
+        provider: 'deepseek',
+        action: 'health',
+        request: {
+            model,
+            messages: [{ role: 'user', content: "Say 'OK'" }],
+            max_tokens: 5
+        },
+        ...(apiKey ? { byokKey: apiKey } : {})
+    }, signal);
 };

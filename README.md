@@ -15,6 +15,8 @@ View your app in AI Studio: https://ai.studio/apps/a66e8c47-2880-435e-a1da-26742
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+2. Set `GEMINI_API_KEY` in the server environment (Google AI Studio: **Settings → Secrets**). Optional owner-managed DeepSeek uses `DEEPSEEK_API_KEY` there as well. Never expose either value through a Vite `VITE_*` variable.
 3. Run the app:
    `npm run dev`
+
+Gemini and DeepSeek browser calls use the same-origin `/api/provider` Node gateway. DeepSeek BYOK, when used, exists only in the active browser session/request and is not included in localStorage, IndexedDB, or backups.

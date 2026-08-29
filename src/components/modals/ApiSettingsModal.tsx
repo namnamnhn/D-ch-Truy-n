@@ -5,8 +5,6 @@ import { runApiHealthCheck, ApiHealthResult } from '../../services/api/healthChe
 import { TriageSettingsTab } from './tabs/TriageSettingsTab';
 import { DeepSeekSettingsTab } from './tabs/DeepSeekSettingsTab';
 import { DEFAULT_TRIAGE_DELAYS } from './tabs/apiSettingsShared';
-import { IS_LITE } from '../../constants';
-import { setUserGeminiKeys, getUserGeminiKeysRaw, consumePendingGeminiKeyTab } from '../../services/api/gemini';
 
 interface ApiSettingsModalProps {
     isOpen: boolean;
@@ -28,12 +26,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
     triageDelays, setTriageDelays
 }) => {
     const effectiveTriageDelays = triageDelays || DEFAULT_TRIAGE_DELAYS;
-    const [activeTab, setActiveTab] = useState<'deepseek' | 'triage' | 'gemini'>('deepseek');
-    // FIX59 (Lite): mở modal do thiếu key (event từ ensureGeminiKeyForLite) -> nhảy sẵn tab Gemini
-    useEffect(() => {
-        if (isOpen && consumePendingGeminiKeyTab()) setActiveTab('gemini');
-    }, [isOpen]);
-    const [localGeminiKeys, setLocalGeminiKeys] = useState<string>(() => getUserGeminiKeysRaw());
+    const [activeTab, setActiveTab] = useState<'deepseek' | 'triage'>('deepseek');
 
     // --- DEEPSEEK: state riêng ---
     const [localDsKey, setLocalDsKey] = useState(deepseekKey);
@@ -102,35 +95,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
                     >
                         Hậu Kiểm Khởi Động
                     </button>
-                    {IS_LITE && (
-                    <button
-                        onClick={() => setActiveTab('gemini')}
-                        className={`py-3 text-sm font-bold border-b-2 transition-colors duration-200 ease-smooth ${activeTab === 'gemini' ? 'border-sky-500 text-sky-600 dark:text-sky-400' : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}
-                    >
-                        API Key Gemini
-                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-sky-50 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400">BẮT BUỘC</span>
-                    </button>
-                    )}
                 </div>
-
-                {IS_LITE && activeTab === 'gemini' && (
-                    <div className="px-6 py-5 space-y-3 overflow-y-auto">
-                        <p className="text-xs font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider">API Key Gemini Cá Nhân (bản Lite)</p>
-                        <p className="text-[11px] text-slate-400">
-                            Dán 1 hoặc nhiều key (mỗi key một dòng, hoặc cách nhau bằng dấu phẩy). App tự luân phiên các key.
-                            Key chỉ lưu trong phiên làm việc trên trình duyệt này — không lưu vào bộ nhớ máy, không đi kèm file Backup.
-                            Lấy key miễn phí tại{' '}
-                            <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="font-bold text-sky-600 hover:underline">aistudio.google.com/apikey</a>.
-                        </p>
-                        <textarea
-                            className="w-full h-28 p-3 text-sm font-mono bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:ring-2 focus:ring-sky-400 resize-none custom-scrollbar"
-                            placeholder={'AIza...\nAIza...'}
-                            value={localGeminiKeys}
-                            onChange={e => { setLocalGeminiKeys(e.target.value); setUserGeminiKeys(e.target.value); }}
-                        />
-                        <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="inline-block px-4 py-2 bg-sky-50 dark:bg-sky-900/20 text-sky-600 dark:text-sky-300 border border-sky-200 dark:border-sky-800 rounded-xl text-xs font-bold hover:bg-sky-100 transition-colors">🔑 Lấy API Key Gemini miễn phí</a>
-                    </div>
-                )}
 
                 <TriageSettingsTab
                     active={activeTab === 'triage'}
@@ -152,7 +117,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
                     <div className="flex items-center justify-between gap-3 flex-wrap">
                         <div>
                             <p className="text-xs font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wider">Chẩn Đoán API</p>
-                            <p className="text-[11px] text-slate-400">Kiểm tra nhanh Gemini + từng key DeepSeek đang nhập</p>
+                            <p className="text-[11px] text-slate-400">Gemini dùng AI Studio Secrets phía server; DeepSeek dùng server secret hoặc BYOK chỉ trong phiên.</p>
                         </div>
                         <button onClick={handleRunHealthCheck} disabled={isHealthChecking} className="px-4 py-2 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 rounded-xl text-sm font-bold hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-colors duration-200 ease-smooth flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 focus-visible:ring-offset-1 disabled:opacity-50">
                             {isHealthChecking ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}

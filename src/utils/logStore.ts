@@ -1,4 +1,5 @@
 import { LogEntry } from '../types';
+import { redactProviderSecrets } from './secretRedaction';
 
 const STORAGE_KEY = 'app_system_logs_v1';
 const MAX_ENTRIES = 500;
@@ -9,7 +10,11 @@ export function loadPersistedLogs(): LogEntry[] {
         if (!raw) return [];
         const parsed = JSON.parse(raw) as LogEntry[];
         if (!Array.isArray(parsed)) return [];
-        return parsed.map(l => ({ ...l, timestamp: new Date(l.timestamp) }));
+        const safeLogs = parsed.map(l => ({ ...l, message: redactProviderSecrets(l.message), timestamp: new Date(l.timestamp) }));
+        if (safeLogs.some((log, index) => log.message !== parsed[index]?.message)) {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(safeLogs.slice(0, MAX_ENTRIES)));
+        }
+        return safeLogs;
     } catch {
         return [];
     }
@@ -17,7 +22,8 @@ export function loadPersistedLogs(): LogEntry[] {
 
 export function persistLogs(logs: LogEntry[]): void {
     try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(logs.slice(0, MAX_ENTRIES)));
+        const safeLogs = logs.slice(0, MAX_ENTRIES).map(log => ({ ...log, message: redactProviderSecrets(log.message) }));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(safeLogs));
     } catch {
         // localStorage đầy hoặc bị chặn (chế độ ẩn danh nghiêm ngặt...) - bỏ qua, không để việc
         // ghi log làm crash thêm lần nữa.
@@ -74,7 +80,7 @@ export function appendPersistedLog(message: string, type: 'success' | 'error' | 
     const entry: LogEntry = {
         id: (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
         timestamp: new Date(),
-        message,
+        message: redactProviderSecrets(message),
         type,
     };
     const merged = [entry, ...base];

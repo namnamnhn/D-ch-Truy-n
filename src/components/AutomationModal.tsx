@@ -130,7 +130,7 @@ export const AutomationModal: React.FC<AutomationModalProps> = ({
     };
 
     /* ─── Validation ─── */
-    const dsKeyOk  = localDsKey.trim().length > 10;
+    const dsKeyOk  = localDsKey.trim().length === 0 || localDsKey.trim().length > 10;
     const canStart = selectedSteps.length > 0 && (engine === 'gemini' || dsKeyOk);
 
     /* ─── Flush & start ─── */
@@ -303,7 +303,7 @@ export const AutomationModal: React.FC<AutomationModalProps> = ({
                                                     type={showDsKey ? 'text' : 'password'}
                                                     value={localDsKey}
                                                     onChange={e => setLocalDsKey(e.target.value)}
-                                                    placeholder="sk-..."
+                                                    placeholder="Để trống nếu server đã có DEEPSEEK_API_KEY"
                                                     className="w-full px-3 py-2 pr-10 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm outline-none focus:ring-2 focus:ring-teal-400 font-mono"
                                                 />
                                                 <button onClick={() => setShowDsKey(p => !p)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1">

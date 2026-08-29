@@ -4,6 +4,7 @@ import { downloadJsonFile, fileToBase64, base64ToFile, reconcileStaleRescueLocks
 import { clearSessionRecord } from '../../utils/storage';
 import { readFileAsText } from '../../utils/fileHelpers';
 import type { CoreApi, UIApi } from '../apiTypes';
+import { sanitizePersistedCredentials } from '../../utils/credentialSanitizer';
 
 export const useFileBackupRestore = (core: CoreApi, ui: UIApi) => {
     const handleBackup = async () => {
@@ -12,9 +13,8 @@ export const useFileBackupRestore = (core: CoreApi, ui: UIApi) => {
             try { coverBase64 = await fileToBase64(core.coverImage); } catch(e) { console.warn("Lỗi mã hóa ảnh bìa:", e); }
         }
         const dataToSave = { ...core.stateRef.current, coverImageBase64: coverBase64, lastSaved: new Date().toISOString(), batchLimits: core.batchLimits, ratioLimits: core.ratioLimits };
-        const safeData = { ...dataToSave };
+        const safeData = sanitizePersistedCredentials(dataToSave).value;
         delete safeData.coverImage;
-        delete safeData.deepseekKey; // Do not backup API key
         // fix44: dọn luôn key OpenRouter cũ còn sót trong dữ liệu legacy (nếu có).
         delete (safeData as any).openRouterKey;
         delete (safeData as any).openRouterModel;
@@ -28,7 +28,8 @@ export const useFileBackupRestore = (core: CoreApi, ui: UIApi) => {
         if (!file) return false;
         try {
             const text = await readFileAsText(file);
-            const data = JSON.parse(text);
+            const data = sanitizePersistedCredentials(JSON.parse(text)).value as any;
+            core.setDeepseekKey('');
             if (data.files && Array.isArray(data.files)) {
                 // FIX (khôi phục mất luôn bản dự phòng tự động): trước đây dùng clearDatabase()
                 // xoá SẠCH cả IndexedDB (kèm kho app_backups chứa 5 snapshot dự phòng tự động và
@@ -171,7 +172,7 @@ export const useFileBackupRestore = (core: CoreApi, ui: UIApi) => {
         if (!file) return false;
         try {
             const text = await readFileAsText(file);
-            const data = JSON.parse(text);
+            const data = sanitizePersistedCredentials(JSON.parse(text)).value as any;
             if (!data || (!data.storyInfo && !data.promptTemplate && !data.additionalDictionary)) {
                 ui.addToast("File không chứa thông tin đồng bộ hợp lệ (thiếu storyInfo/promptTemplate/dictionary).", "error");
                 return false;

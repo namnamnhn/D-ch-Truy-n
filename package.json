@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:pdf-build": "node scripts/verify-pdf-build.mjs",
+    "test:credential-build": "node scripts/verify-credential-build.mjs",
     "test:watch": "vitest",
     "changelog:add": "node scripts/add-changelog-entry.cjs",
     "preview": "vite preview",

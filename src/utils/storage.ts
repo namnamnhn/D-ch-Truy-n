@@ -1,4 +1,6 @@
 
+import { purgeLegacyCredentialLocalStorage, sanitizePersistedCredentials } from './credentialSanitizer';
+
 const DB_NAME = 'TranslationAppDB';
 const STORE_NAME = 'app_session';
 const BACKUP_STORE = 'app_backups'; // NÂNG CẤP #10: kho snapshot dự phòng tự động
@@ -125,7 +127,7 @@ export const initDB = (): Promise<IDBDatabase> => {
 export const saveToStorage = async (key: string, data: any, retryCount = 0): Promise<void> => {
   try {
     const db = await initDB();
-    const dataToStore = await compressData(data);
+    const dataToStore = await compressData(sanitizePersistedCredentials(data).value);
     return new Promise((resolve, reject) => {
       try {
         const transaction = db.transaction(STORE_NAME, 'readwrite');
@@ -184,7 +186,9 @@ export const loadFromStorage = async (key: string): Promise<any> => {
         request.onsuccess = async () => {
             try {
                 const decompressed = await decompressData(request.result);
-                resolve(decompressed);
+                const sanitized = sanitizePersistedCredentials(decompressed);
+                if (sanitized.removed > 0) await saveToStorage(key, sanitized.value);
+                resolve(sanitized.value);
             } catch (e) {
                 reject(e);
             }
@@ -206,11 +210,12 @@ export const loadFromStorage = async (key: string): Promise<any> => {
  */
 export const saveBackupSnapshot = async (data: any): Promise<void> => {
   const db = await initDB();
+  const safeData = sanitizePersistedCredentials(data).value;
   return new Promise((resolve, reject) => {
     try {
       const transaction = db.transaction(BACKUP_STORE, 'readwrite');
       const store = transaction.objectStore(BACKUP_STORE);
-      store.put(data, `bk_${Date.now()}`);
+      store.put(safeData, `bk_${Date.now()}`);
       const keysReq = store.getAllKeys();
       keysReq.onsuccess = () => {
         const keys = (keysReq.result as IDBValidKey[]).map(String).sort();
@@ -248,11 +253,28 @@ export const loadBackupSnapshot = async (key: string): Promise<any> => {
       req.onerror = () => reject(req.error);
       req.onsuccess = async () => {
         try {
-          resolve(await decompressData(req.result));
+          const decompressed = await decompressData(req.result);
+          const sanitized = sanitizePersistedCredentials(decompressed);
+          if (sanitized.removed > 0) {
+            const writeTransaction = db.transaction(BACKUP_STORE, 'readwrite');
+            writeTransaction.objectStore(BACKUP_STORE).put(sanitized.value, key);
+          }
+          resolve(sanitized.value);
         } catch (e) { reject(e); }
       };
     } catch (e) { reject(e); }
   });
+};
+
+/** Removes legacy provider credentials while preserving every manuscript/session field. */
+export const migratePersistedProviderCredentials = async (): Promise<void> => {
+  purgeLegacyCredentialLocalStorage();
+  try {
+    const keys = await listBackupSnapshotKeys();
+    await Promise.all(keys.map(key => loadBackupSnapshot(key).then(() => undefined)));
+  } catch {
+    // Session load/save sanitization remains the mandatory defense if backup migration is unavailable.
+  }
 };
 
 /**

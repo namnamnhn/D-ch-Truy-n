@@ -1,73 +1,22 @@
 
 import { logger } from "../../utils/logger";
-import { GoogleGenAI, HarmCategory, HarmBlockThreshold } from '@google/genai';
 import { quotaManager } from '../../utils/quotaManager';
-import { MODEL_CONFIGS, IS_LITE } from '../../constants';
+import { MODEL_CONFIGS } from '../../constants';
+import { createGatewayGeminiClient } from './providerGatewayClient';
 
-// ============================================================================
-// FIX59 (bản Lite): API Key Gemini CÁ NHÂN do người dùng nhập.
-// - Bản Full giữ nguyên key nhúng qua biến môi trường build (process.env.GEMINI_API_KEY).
-// - Bản Lite TỪ CHỐI key nhúng: bắt buộc người dùng nhập key cá nhân (hỗ trợ NHIỀU key,
-//   phân tách bằng dấu xuống dòng/dấu phẩy — giống cách nhập của DeepSeek), luân phiên
-//   từng key theo lượt gọi. Key CHỈ tồn tại trong bộ nhớ phiên (module variable):
-//   KHÔNG ghi localStorage/IndexedDB -> tự mất khi tải lại trang, KHÔNG bao giờ dính
-//   vào backup/session file.
-// ============================================================================
-let userGeminiKeys: string[] = [];
-let userKeyCursor = 0;
+// Gemini is configured by the AI Studio server-side Secrets runtime. Keeping
+// this compatibility guard avoids changing Full/Lite routing policy in WP-FIN-02.
+// A missing server secret is surfaced explicitly by the same-origin gateway.
+export const ensureGeminiKeyForLite = (): boolean => true;
 
-export const setUserGeminiKeys = (raw: string): void => {
-    userGeminiKeys = (raw || '').split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
-    userKeyCursor = 0;
-};
-export const getUserGeminiKeysRaw = (): string => userGeminiKeys.join('\n');
-export const hasUserGeminiKey = (): boolean => userGeminiKeys.length > 0;
-
-// Kênh "mở bảng nhập key" từ bất cứ luồng nghiệp vụ nào mà không phải khoan props xuyên
-// nhiều tầng component: bắn event toàn cục, App.tsx lắng nghe để mở ApiSettingsModal;
-// modal đọc consumePendingGeminiKeyTab() để tự nhảy đúng tab Gemini khi mở vì lý do này.
-let pendingOpenGeminiTab = false;
-export const requestGeminiKeySetup = (): void => {
-    pendingOpenGeminiTab = true;
-    try { window.dispatchEvent(new CustomEvent('open-gemini-key-settings')); } catch { /* ignore */ }
-};
-export const consumePendingGeminiKeyTab = (): boolean => {
-    const v = pendingOpenGeminiTab;
-    pendingOpenGeminiTab = false;
-    return v;
-};
-
-// Chốt chặn dùng chung cho mọi luồng nghiệp vụ cần Gemini ở bản Lite: đủ key -> chạy
-// bình thường; thiếu key -> mở bảng cài đặt và báo false để caller dừng.
-export const ensureGeminiKeyForLite = (): boolean => {
-    if (!IS_LITE || hasUserGeminiKey()) return true;
-    requestGeminiKeySetup();
-    return false;
-};
-
-export const getAiClient = () => {
-  let apiKey: string | undefined;
-  if (IS_LITE) {
-      if (userGeminiKeys.length === 0) {
-          throw new Error("Chưa cấu hình API Key Gemini cá nhân. Mở Cài đặt để nhập key (lấy miễn phí tại aistudio.google.com/apikey).");
-      }
-      // Luân phiên đều các key cá nhân theo từng lượt tạo client (mỗi lời gọi API tạo 1 client)
-      apiKey = userGeminiKeys[userKeyCursor++ % userGeminiKeys.length];
-  } else {
-      apiKey = process.env.GEMINI_API_KEY || userGeminiKeys[0];
-  }
-  if (!apiKey) {
-    throw new Error("Không tìm thấy API Key. Vui lòng kiểm tra biến môi trường.");
-  }
-  return new GoogleGenAI({ apiKey });
-};
+export const getAiClient = createGatewayGeminiClient;
 
 const SAFETY_SETTINGS = [
-    { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-    { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-    { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-    { category: HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold: HarmBlockThreshold.BLOCK_NONE },
+    { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+    { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+    { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+    { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+    { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' },
 ];
 
 export { SAFETY_SETTINGS };
@@ -80,14 +29,17 @@ export const testCurrentKey = async (): Promise<{ success: boolean; message: str
             contents: "Hi",
             config: { safetySettings: SAFETY_SETTINGS }
         });
-        return { success: true, message: "Key hợp lệ và còn Quota!" };
+        return { success: true, message: "Gemini server-side đã cấu hình và đang hoạt động." };
     } catch (error: any) {
         const msg = (error.message || error.toString()).toLowerCase();
         if (msg.includes("resource exhausted") || msg.includes("quota")) {
             return { success: false, message: "Key này đã hết Quota (Resource Exhausted)." };
         }
+        if (error.code === 'SERVER_CONFIGURATION_MISSING') {
+            return { success: false, message: "Thiếu GEMINI_API_KEY phía server. Hãy cấu hình trong AI Studio Settings > Secrets." };
+        }
         if (msg.includes("api key not valid") || msg.includes("api_key_invalid") || (error.status === 400 && msg.includes('key'))) {
-            return { success: false, message: "API Key không hợp lệ hoặc đã bị khóa." };
+            return { success: false, message: "GEMINI_API_KEY phía server không hợp lệ hoặc đã bị khóa." };
         }
         return { success: false, message: error.message };
     }

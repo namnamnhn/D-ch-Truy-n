@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Archive, Download, RefreshCw, Loader2 } from 'lucide-react';
 import { listBackupSnapshotKeys, loadBackupSnapshot } from '../utils/storage';
+import { sanitizePersistedCredentials } from '../utils/credentialSanitizer';
 
 // NÂNG CẤP #10 — Panel "Bản Dự Phòng Tự Động": liệt kê các snapshot mà hệ thống tự chụp
 // vào IndexedDB (giữ 5 bản gần nhất, 1 bản/10 phút khi có thay đổi), cho phép tải về dạng
@@ -30,12 +31,9 @@ export const AutoBackupPanel: React.FC = () => {
         try {
             const data = await loadBackupSnapshot(key);
             if (!data) throw new Error('Snapshot rỗng');
-            // FIX (rò rỉ API key): snapshot tự động chứa nguyên state (kèm deepseekKey) trong khi
-            // backup THỦ CÔNG thì chủ động xoá key trước khi xuất ("Do not backup API key"). Tải
-            // snapshot về để gửi người khác/máy khác sẽ lộ key — lược bỏ cùng loại field nhạy cảm
-            // như handleBackup để file tải về an toàn và nhất quán với backup thủ công.
-            const safeData = { ...data };
-            delete safeData.deepseekKey;
+            // Defense in depth for snapshots created by older versions: sanitize recursively again
+            // at download time even though current storage writes already strip provider credentials.
+            const safeData = sanitizePersistedCredentials(data).value as any;
             delete (safeData as any).openRouterKey;
             delete (safeData as any).openRouterModel;
             const blob = new Blob([JSON.stringify(safeData)], { type: 'application/json' });

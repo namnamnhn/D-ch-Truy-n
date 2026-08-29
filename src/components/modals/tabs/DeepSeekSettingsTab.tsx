@@ -1,7 +1,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import React, { useState, useEffect } from 'react';
 import { ExternalLink, CheckCircle, AlertTriangle, Loader2, Upload, RefreshCw, X, ShieldCheck, CheckSquare, Square } from 'lucide-react';
-import { deepSeekKeyManager, DeepSeekKeyStatus, DEEPSEEK_MODELS } from '../../../services/api/deepseek';
+import { deepSeekKeyManager, DeepSeekKeyStatus, DEEPSEEK_MODELS, testDeepSeekConnection } from '../../../services/api/deepseek';
 
 interface DeepSeekSettingsTabProps {
     active: boolean;
@@ -110,29 +110,10 @@ export const DeepSeekSettingsTab: React.FC<DeepSeekSettingsTabProps> = ({
             if (signal.aborted) break;
             const modelId = localDsModels[i];
             try {
-                const res = await fetch("https://api.deepseek.com/chat/completions", {
-                    method: "POST",
-                    headers: {
-                        "Authorization": `Bearer ${currentKey}`,
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify({
-                        model: modelId,
-                        messages: [{ role: "user", content: "Say 'OK'" }],
-                        max_tokens: 5
-                    }),
-                    signal
-                });
-
-                if (res.ok) {
-                    setDsTestResults(prev => prev.map((r, idx) => idx === i ? { ...r, status: 'success', message: 'Kết nối thành công' } : r));
-                } else {
-                    const err = await res.json().catch(() => ({}));
-                    setDsTestResults(prev => prev.map((r, idx) => idx === i ? { ...r, status: 'error', message: err.error?.message || `Thất bại (HTTP ${res.status})` } : r));
-                    hasError = true;
-                }
+                await testDeepSeekConnection(currentKey, modelId, signal);
+                setDsTestResults(prev => prev.map((r, idx) => idx === i ? { ...r, status: 'success', message: 'Kết nối thành công' } : r));
             } catch (e: any) {
-                if (e.name === 'AbortError') break;
+                if (e.name === 'AbortError' || e.code === 'ABORTED') break;
                 setDsTestResults(prev => prev.map((r, idx) => idx === i ? { ...r, status: 'error', message: 'Thất bại (Lỗi mạng/Timeout)' } : r));
                 hasError = true;
             }

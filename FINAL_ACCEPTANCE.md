@@ -12,9 +12,9 @@ Baseline: accepted `main` commit `ccb52a4`; audit branch `codex/finalization-gat
 | --- | --- | --- |
 | Gate 1 — Product Definition Freeze | PASS | Whole-app product boundary, supported journeys, safety contract, Story Engine invariants, and release-quality definition are frozen below. |
 | Gate 2 — Whole-App Technical Audit | COMPLETE | Repository-wide static, automated, dependency, build, and real-browser audit completed; findings and ordered work packages are recorded. |
-| Product release acceptance | BLOCKED | Two P0 and six P1 findings remain open. Gate completion is not release approval. |
+| Product release acceptance | BLOCKED | Gate 3 closed the two P0 findings and two related P1 findings; four P1 findings and later packages remain open. Gate completion is not release approval. |
 
-## Gate 3 P0 Closure Evidence (In Progress)
+## Gate 3 P0 Closure Evidence (Authorized Scope Complete)
 
 ### WP-FIN-01 — PASS
 
@@ -23,7 +23,15 @@ Baseline: accepted `main` commit `ccb52a4`; audit branch `codex/finalization-gat
 - PDF document initialization uses `stopAtErrors: true`, `enableXfa: false`, and the explicit compatibility defense `isEvalSupported: false` where supported; the loading task is destroyed in a `finally` boundary.
 - Six focused Vitest regressions pass, including ordinary/malformed fixtures and preservation of an accepted workspace on failure. Production build verification passes, and production-preview Playwright successfully imported the ordinary PDF through the real file chooser with the worker returning HTTP 200 from the application origin.
 
-WP-FIN-02 is not yet accepted. WP-FIN-03 through WP-FIN-08 remain open, so whole-product release acceptance remains **BLOCKED**.
+### WP-FIN-02 — PASS
+
+- **P0-SEC-002: PASS.** Vite no longer substitutes `GEMINI_API_KEY`; the browser no longer imports or instantiates `GoogleGenAI`. Approved Gemini calls pass through the stateless same-origin Node gateway, which reads AI Studio's server-side `GEMINI_API_KEY` and returns normalized result/error envelopes without secrets.
+- **P1-CRED-001: PASS.** DeepSeek supports an owner-side `DEEPSEEK_API_KEY`, with session-only BYOK as a fallback. BYOK is never written to localStorage, IndexedDB sessions, automatic snapshots, or downloaded backups; legacy copies are migrated out while manuscript fields are preserved.
+- **P2-LOG-001 credential scope: PASS.** Provider keys, bearer headers/tokens, and obvious secret forms are redacted before persisted global logs/diagnostics and from gateway errors, using one narrow common layer.
+- Thirteen provider/security regressions pass. Gemini and DeepSeek streaming remain functional, cancellation is propagated where supported, model/action bypasses are rejected, and a sentinel-secret production build scan passed across 20 browser artifacts. Production-preview health UI used only `/api/provider`, displayed explicit missing-secret guidance, and retained no DeepSeek credential in localStorage.
+- Real AI Studio Secrets acceptance is intentionally prepared but deferred until the CEO audits this code package; no live credential was requested or used.
+
+WP-FIN-03 through WP-FIN-08 remain open, so whole-product release acceptance remains **BLOCKED**.
 
 ## Frozen Product Acceptance Definition
 
@@ -67,12 +75,12 @@ The accepted product is a single-user, browser-first Vietnamese workspace for lo
 | Main baseline | Audit starts from accepted clean `main` | PASS | `ccb52a4`; branch created directly from `main` |
 | Startup/navigation | Production preview loads and primary pages render | PASS WITH NOTES | Playwright smoke; storage persistence denied warning and favicon 404 |
 | Access/edition | Runtime enforces declared access-code/edition contract | FAIL (P1) | `REQUIRE_CODE`/`PASSWORD_HASH` unused; one-click entry |
-| Gemini credential boundary | Full edition works without exposing a shared build secret | FAIL (P0) | Vite client substitution plus Lite-only BYOK UI |
-| DeepSeek credential boundary | User key is not copied into unsafe durable stores/snapshots | FAIL (P1) | Plaintext localStorage + session + auto-backup |
+| Gemini credential boundary | Full edition works without exposing a shared build secret | PASS (code package) | Server-only AI Studio secret, narrow same-origin gateway, sentinel bundle scan; live AI Studio check deferred |
+| DeepSeek credential boundary | User key is not copied into unsafe durable stores/snapshots | PASS | Server-secret preference, memory-only BYOK, recursive legacy migration and storage defenses |
 | Model inventory | Configured Gemini/Gemma IDs match current provider catalog | PASS | Official Google model documentation checked 2026-08-29 |
 | TXT import | Production build imports ordinary text | PASS | Playwright smoke imported one TXT file |
-| PDF import security | Untrusted PDF parser has no known code-execution exposure | FAIL (P0) | `pdfjs-dist@4.0.379`; GHSA-wgrm-67xf-hhpq |
-| PDF import runtime | Shipped CSP permits the shipped PDF worker path | FAIL (P1) | Playwright CSP error; no PDF workspace item |
+| PDF import security | Untrusted PDF parser has no known code-execution exposure | PASS | `pdfjs-dist@6.2.108`, eval disabled, audits clean |
+| PDF import runtime | Shipped CSP permits the shipped PDF worker path | PASS | Same-origin worker/assets and successful production-preview import |
 | ZIP/EPUB/DOCX/PDF/backup budgets | Every input boundary enforces size/count/depth/expansion limits | FAIL (P1) | Whole-file/unbounded parsing paths |
 | Backup/restore | Versioned schema is validated and atomically committed with rollback | FAIL (P1) | Session cleared before nested restore validation |
 | Translation core regressions | Default automated translation/text regressions pass | PASS | Included in 342/342 tests |
@@ -83,9 +91,9 @@ The accepted product is a single-user, browser-first Vietnamese workspace for lo
 | TypeScript | `tsc --noEmit` passes | PASS | Exit 0 |
 | ESLint | Repository lint passes with zero errors | FAIL (P2) | 10 errors, 27 warnings |
 | Production build | Build completes within accepted performance budget | PARTIAL (P2) | Exit 0; 874.98 kB chunk warning |
-| Dependency security | No release-blocking runtime advisory; lock/install policy clean | FAIL | Direct PDF.js high advisory; optional critical/high lock paths |
+| Dependency security | No release-blocking runtime advisory; lock/install policy clean | PASS | Both full and runtime npm audits report zero vulnerabilities after WP-FIN-01 |
 | Test runtime hygiene | Passing tests produce no hidden environment errors | FAIL (P2) | `localStorage is not defined` emitted to stderr |
-| Logging/privacy | All persisted/exported logs redact credentials and sensitive content | PARTIAL (P2) | Story Engine redacts; global crash logging does not |
+| Logging/privacy | All persisted/exported logs redact credentials and sensitive content | PARTIAL (P2) | Provider credentials now share common global/Story redaction; broader non-credential log-content policy remains open |
 | Documentation/reproducibility | Product, security, deployment, recovery, checks, and authoritative lockfile documented | FAIL (P2) | Starter README; npm and bun lockfiles both tracked |
 | Gate 2 non-implementation rule | Findings are not fixed before register and work packages are complete | PASS | Gate branch changes only finalization control documents after temporary smoke artifacts are removed |
 | Local-only handoff | Commit exists; no push, merge, or PR | PASS | Finalization control documents committed locally on the audit branch after verification/diff review |
@@ -94,21 +102,21 @@ The accepted product is a single-user, browser-first Vietnamese workspace for lo
 
 ### P0
 
-- **P0-SEC-001:** vulnerable PDF.js executes untrusted PDF JavaScript in the application origin.
-- **P0-SEC-002:** Full-edition Gemini integration either exposes a shared key in the client or ships inoperable without one.
+- **P0-SEC-001: CLOSED by WP-FIN-01.**
+- **P0-SEC-002: CLOSED by WP-FIN-02.**
 
 ### P1
 
-- **P1-FUN-001:** CSP blocks the production PDF worker.
+- **P1-FUN-001: CLOSED by WP-FIN-01.**
 - **P1-AUTH-001:** declared access code is not enforced.
 - **P1-DATA-001:** backup restore is unvalidated and non-transactional.
 - **P1-QA-001:** repository tests are incompletely discovered and have no UI/browser gate.
 - **P1-RES-001:** import/restore resource consumption is unbounded.
-- **P1-CRED-001:** DeepSeek credentials are persisted in plaintext session and auto-backup data.
+- **P1-CRED-001: CLOSED by WP-FIN-02.**
 
 ### P2
 
-- Lint debt; large production chunk; test stderr pollution; optional vulnerable lock paths; fail-open translation safety probe; unredacted global crash logs; incomplete documentation/lockfile authority; legacy Story Engine adapters/fixture debt.
+- Lint debt; large production chunk; test stderr pollution; fail-open translation safety probe; broader non-credential log-content policy; incomplete documentation/lockfile authority; legacy Story Engine adapters/fixture debt. The optional vulnerable lock paths were removed incidentally by WP-FIN-01.
 
 Full evidence and impact are in `PROJECT_CONTROL.md`.
 
@@ -128,6 +136,21 @@ Full evidence and impact are in `PROJECT_CONTROL.md`.
 Work packages are intentionally ordered by exploitability and trust boundary before reliability, quality, and documentation.
 
 ## Verification Record
+
+Gate 3 authorized-scope final verification:
+
+| Command/check | Result |
+| --- | --- |
+| `npm test -- --reporter=verbose` | PASS — 20 files, 361/361 tests |
+| `npx tsc --noEmit` | PASS |
+| `npm run build` | PASS — existing large-chunk warning; largest application chunk 877.67 kB |
+| `npm run lint` | Known baseline unchanged — 10 errors, 27 warnings |
+| `npm audit --json` / `npm audit --omit=dev --json` | PASS — 0 vulnerabilities in each |
+| `npm run test:pdf-build` | PASS |
+| `npm run test:credential-build` | PASS — 20 artifacts, zero sentinel/provider-boundary leaks |
+| Production-preview Playwright | PASS — ordinary PDF import; same-origin provider health requests; explicit missing-secret UX; no DeepSeek localStorage credential |
+
+Gate 2 historical baseline:
 
 | Command/check | Result |
 | --- | --- |
@@ -160,6 +183,6 @@ These accepted subsystem results do not override whole-app P0/P1 findings.
 
 **BLOCKED.**
 
-Gate 1 and Gate 2 are complete, but the product is not ready for final acceptance or release. CEO authorization should start WP-FIN-01 and WP-FIN-02. After all P0/P1 items close, rerun the entire acceptance matrix, including real provider health, all supported import/export families, persistence/restore recovery, and production-browser E2E.
+Gate 1, Gate 2, and the authorized WP-FIN-01/WP-FIN-02 scope are complete, but the product is not ready for final acceptance or release. WP-FIN-03 through WP-FIN-08 remain open. After all P0/P1 items close, rerun the entire acceptance matrix, including real AI Studio provider health, all supported import/export families, persistence/restore recovery, and production-browser E2E.
 
 No push, merge, or pull request is authorized or performed by this program.

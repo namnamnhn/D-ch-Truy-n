@@ -1,9 +1,5 @@
-// NÂNG CẤP #9 — HEALTH-CHECK API THỐNG NHẤT
-// Kiểm tra nhanh "còn sống" của cả 2 nhà cung cấp trong 1 lần bấm:
-//   - Gemini : gọi generateContent "Hi" trên model flash-lite đầu tiên còn bật
-//   - DeepSeek   : kiểm tra TỪNG key (mask) với model đầu tiên đã chọn
-// Trả về danh sách kết quả để UI hiển thị dạng bảng; KHÔNG throw — mỗi mục tự bắt lỗi.
 import { getAiClient, SAFETY_SETTINGS } from './gemini';
+import { testDeepSeekConnection } from './deepseek';
 
 export interface ApiHealthResult {
     name: string;
@@ -12,11 +8,20 @@ export interface ApiHealthResult {
     latencyMs: number;
 }
 
-const maskKey = (key: string): string =>
-    key.length > 12 ? key.substring(0, 8) + '...' + key.substring(key.length - 4) : 'Invalid Key';
-
 const splitKeys = (raw?: string): string[] =>
     (raw || '').split(/[,\n]/).map(k => k.trim()).filter(Boolean);
+
+const maskKey = (key: string): string => key.length > 8 ? `${key.slice(0, 4)}…${key.slice(-4)}` : '••••';
+
+const safeFailureDetail = (error: any): string => {
+    const message = String(error?.message || error || '').toLowerCase();
+    if (error?.code === 'SERVER_CONFIGURATION_MISSING') return error.message;
+    if (error?.code === 'RATE_LIMITED' || /quota|exhausted|429|rate.?limit/.test(message)) return 'Hết quota / rate-limit';
+    if (error?.code === 'PROVIDER_UNAVAILABLE') return 'Provider/model tạm không khả dụng';
+    if (/api key not valid|api_key_invalid/.test(message)) return 'API Key không hợp lệ';
+    if (/failed to fetch|network|cannot reach/.test(message)) return 'Lỗi mạng hoặc gateway cùng origin';
+    return error?.message || 'Lỗi không xác định';
+};
 
 export const runApiHealthCheck = async (cfg: {
     enabledModels: string[];
@@ -25,54 +30,34 @@ export const runApiHealthCheck = async (cfg: {
 }): Promise<ApiHealthResult[]> => {
     const results: ApiHealthResult[] = [];
 
-    // --- GEMINI ---
     {
-        const preferred = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.5-flash', 'gemini-3.6-flash'];
-        const model = preferred.find(m => cfg.enabledModels.includes(m)) || cfg.enabledModels.find(m => m.startsWith('gemini')) || 'gemini-3.5-flash-lite';
+        const model = cfg.enabledModels[0] || 'gemini-3.5-flash';
         const t0 = Date.now();
         try {
-            const ai = getAiClient();
-            await ai.models.generateContent({
+            await getAiClient().models.generateContent({
                 model,
                 contents: 'Hi',
                 config: { maxOutputTokens: 5, safetySettings: SAFETY_SETTINGS }
             });
-            results.push({ name: `Gemini (${model})`, ok: true, detail: 'Kết nối tốt', latencyMs: Date.now() - t0 });
-        } catch (e: any) {
-            const msg = (e?.message || String(e)).toLowerCase();
-            let detail = e?.message || 'Lỗi không xác định';
-            if (msg.includes('quota') || msg.includes('exhausted') || msg.includes('429')) detail = 'Hết quota / rate-limit';
-            else if (msg.includes('api key not valid') || msg.includes('api_key_invalid')) detail = 'API Key không hợp lệ';
-            else if (msg.includes('failed to fetch') || msg.includes('network')) detail = 'Lỗi mạng';
-            results.push({ name: `Gemini (${model})`, ok: false, detail, latencyMs: Date.now() - t0 });
+            results.push({ name: `Gemini server-side (${model})`, ok: true, detail: 'Kết nối tốt', latencyMs: Date.now() - t0 });
+        } catch (error: any) {
+            results.push({ name: `Gemini server-side (${model})`, ok: false, detail: safeFailureDetail(error), latencyMs: Date.now() - t0 });
         }
     }
 
-    // --- DEEPSEEK (từng key) ---
     {
-        const dsKeys = splitKeys(cfg.deepseekKeys);
+        const keys = splitKeys(cfg.deepseekKeys);
         const model = (cfg.deepseekModel || 'deepseek-v4-flash').split(',')[0].trim() || 'deepseek-v4-flash';
-        if (dsKeys.length === 0) {
-            results.push({ name: 'DeepSeek', ok: false, detail: 'Chưa cấu hình key (bình thường nếu không dùng)', latencyMs: 0 });
-        } else {
-            for (let i = 0; i < dsKeys.length; i++) {
-                const t0 = Date.now();
-                const label = `DeepSeek #${i + 1} (${maskKey(dsKeys[i])})`;
-                try {
-                    const res = await fetch('https://api.deepseek.com/chat/completions', {
-                        method: 'POST',
-                        headers: { 'Authorization': `Bearer ${dsKeys[i]}`, 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Hi' }], max_tokens: 5 })
-                    });
-                    if (!res.ok) {
-                        const errObj = await res.json().catch(() => ({}));
-                        results.push({ name: label, ok: false, detail: errObj?.error?.message || `HTTP ${res.status}`, latencyMs: Date.now() - t0 });
-                    } else {
-                        results.push({ name: label, ok: true, detail: `OK qua ${model}`, latencyMs: Date.now() - t0 });
-                    }
-                } catch (e: any) {
-                    results.push({ name: label, ok: false, detail: e?.message || 'Lỗi mạng', latencyMs: Date.now() - t0 });
-                }
+        const candidates = keys.length ? keys : [''];
+        for (let index = 0; index < candidates.length; index++) {
+            const key = candidates[index];
+            const t0 = Date.now();
+            const label = key ? `DeepSeek BYOK #${index + 1} (${maskKey(key)})` : 'DeepSeek server-side';
+            try {
+                await testDeepSeekConnection(key, model);
+                results.push({ name: label, ok: true, detail: `OK qua ${model}`, latencyMs: Date.now() - t0 });
+            } catch (error: any) {
+                results.push({ name: label, ok: false, detail: safeFailureDetail(error), latencyMs: Date.now() - t0 });
             }
         }
     }
