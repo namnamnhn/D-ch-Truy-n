@@ -53,11 +53,12 @@ describe('WP-FIN-01 PDF runtime containment', () => {
     await expect(parsePdf(fixture('malformed.pdf'))).rejects.toThrow(/Lỗi đọc PDF:/);
   });
 
-  it('disables eval where supported and uses only local auxiliary assets', () => {
+  it('disables eval, XFA, and PDF scripting while using only local auxiliary assets', () => {
     const options = createSecurePdfDocumentOptions(new ArrayBuffer(8));
     expect(options.isEvalSupported).toBe(false);
     expect(options.stopAtErrors).toBe(true);
     expect(options.enableXfa).toBe(false);
+    expect(options.enableScripting).toBe(false);
     expect([
       options.cMapUrl,
       options.iccUrl,

@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
 import {
   APPROVED_DEEPSEEK_MODELS,
@@ -38,6 +39,16 @@ export interface ProviderGatewayDependencies {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   createGeminiClient?: (apiKey: string) => GeminiClient;
+}
+
+export type ProviderRequestAuthorizer = (request: IncomingMessage) => boolean | Promise<boolean>;
+
+export interface ProviderHttpHandlerOptions extends ProviderGatewayDependencies {
+  /**
+   * Must be supplied by the server-side access/session authority owned by WP-FIN-03.
+   * There is deliberately no browser token or header fallback.
+   */
+  authorizeRequest?: ProviderRequestAuthorizer;
 }
 
 class GatewayFailure extends Error {
@@ -277,7 +288,7 @@ export async function handleProviderGateway(
   }
 }
 
-async function readJsonBody(request: import('node:http').IncomingMessage): Promise<unknown> {
+async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
@@ -293,7 +304,7 @@ async function readJsonBody(request: import('node:http').IncomingMessage): Promi
   }
 }
 
-async function writeNodeResponse(webResponse: Response, response: import('node:http').ServerResponse): Promise<void> {
+async function writeNodeResponse(webResponse: Response, response: ServerResponse): Promise<void> {
   response.statusCode = webResponse.status;
   webResponse.headers.forEach((value, key) => response.setHeader(key, value));
   if (!webResponse.body) return void response.end();
@@ -309,25 +320,63 @@ async function writeNodeResponse(webResponse: Response, response: import('node:h
   }
 }
 
+export function createProviderRequestHandler(options: ProviderHttpHandlerOptions = {}) {
+  const { authorizeRequest, ...providerDependencies } = options;
+
+  return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+    if (request.method !== 'POST') {
+      response.setHeader('Allow', 'POST');
+      await writeNodeResponse(errorResponse(new GatewayFailure(405, 'INVALID_REQUEST', 'Only POST is allowed.')), response);
+      return;
+    }
+
+    if (!authorizeRequest) {
+      await writeNodeResponse(errorResponse(new GatewayFailure(
+        503,
+        'AUTHORIZATION_NOT_CONFIGURED',
+        'Provider access is blocked until server-side session and entitlement enforcement is installed by WP-FIN-03.',
+      )), response);
+      return;
+    }
+
+    let authorized = false;
+    try {
+      authorized = await authorizeRequest(request);
+    } catch {
+      await writeNodeResponse(errorResponse(new GatewayFailure(
+        503,
+        'AUTHORIZATION_NOT_CONFIGURED',
+        'Provider access authorization could not be verified.',
+      )), response);
+      return;
+    }
+    if (!authorized) {
+      await writeNodeResponse(errorResponse(new GatewayFailure(401, 'UNAUTHORIZED', 'Provider access is not authorized.')), response);
+      return;
+    }
+
+    const abortController = new AbortController();
+    request.once('aborted', () => abortController.abort());
+    response.once('close', () => { if (!response.writableEnded) abortController.abort(); });
+    try {
+      const input = await readJsonBody(request);
+      await writeNodeResponse(
+        await handleProviderGateway(input, providerDependencies, abortController.signal),
+        response,
+      );
+    } catch (error) {
+      await writeNodeResponse(errorResponse(error, abortController.signal), response);
+    }
+  };
+}
+
 export function providerGatewayPlugin(): Plugin {
+  const handleRequest = createProviderRequestHandler();
   const install = (middlewares: { use: (fn: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, next: () => void) => void) => void }) => {
     middlewares.use(async (request, response, next) => {
       const pathname = (request.url || '').split('?')[0];
       if (pathname !== PROVIDER_GATEWAY_PATH) return next();
-      if (request.method !== 'POST') {
-        response.setHeader('Allow', 'POST');
-        await writeNodeResponse(errorResponse(new GatewayFailure(405, 'INVALID_REQUEST', 'Only POST is allowed.')), response);
-        return;
-      }
-      const abortController = new AbortController();
-      request.once('aborted', () => abortController.abort());
-      response.once('close', () => { if (!response.writableEnded) abortController.abort(); });
-      try {
-        const input = await readJsonBody(request);
-        await writeNodeResponse(await handleProviderGateway(input, {}, abortController.signal), response);
-      } catch (error) {
-        await writeNodeResponse(errorResponse(error, abortController.signal), response);
-      }
+      await handleRequest(request, response);
     });
   };
 

@@ -20,11 +20,13 @@ export const APPROVED_DEEPSEEK_MODELS = [
 
 export type ProviderErrorCode =
   | 'ABORTED'
+  | 'AUTHORIZATION_NOT_CONFIGURED'
   | 'INVALID_REQUEST'
   | 'MODEL_NOT_ALLOWED'
   | 'PROVIDER_UNAVAILABLE'
   | 'RATE_LIMITED'
   | 'SERVER_CONFIGURATION_MISSING'
+  | 'UNAUTHORIZED'
   | 'PROVIDER_ERROR';
 
 export interface ProviderErrorPayload {

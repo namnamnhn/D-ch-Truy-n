@@ -4,7 +4,7 @@
 
 - Authoritative directive: `PROJECT_CONTROL.md` and `FINAL_ACCEPTANCE.md` on `main`.
 - Accepted predecessor package: CEO rework/finalization package at `ccb52a4`.
-- Finalization branch: `codex/finalization-gates-1-2`, created directly from clean `main`.
+- Gate 1/2 audit branch: `codex/finalization-gates-1-2`, created directly from clean `main`; current Gate 3 branch is recorded below.
 - Audit date: 2026-08-29 (Asia/Saigon).
 - Scope constraint: Gate 2 is audit and work-package definition only. No finding is remediated in this gate.
 
@@ -16,9 +16,9 @@ Story Engine V3 remains a release-critical subsystem, but final product acceptan
 
 ## Release Stage
 
-FINALIZATION PROGRAM — Gate 1 and Gate 2 complete. The authorized Gate 3 P0 closure scope is complete, but release remains **BLOCKED** by four open P1 findings and later work packages. The predecessor Story Engine package remains accepted; this decision concerns whole-app production acceptance.
+FINALIZATION PROGRAM — Gate 1 and Gate 2 complete. Gate 3 rework leaves WP-FIN-01 accepted and WP-FIN-02 **CONDITIONAL / BLOCKED ON WP-FIN-03**. Release remains **BLOCKED** by the provider authorization dependency, four open P1 findings, and later work packages. The predecessor Story Engine package remains accepted; this decision concerns whole-app production acceptance.
 
-## Gate 3 — P0 Closure Program (Authorized Scope Complete)
+## Gate 3 — P0 Closure Program (CEO Rework Recorded)
 
 Branch: `codex/finalization-p0-closure`, created from clean updated `main` at `4c190170e44196f245e8cddaa0062b85f1a43072`.
 
@@ -28,30 +28,31 @@ Status: **PASS**.
 
 | Finding | Verdict | Evidence |
 | --- | --- | --- |
-| P0-SEC-001 | PASS | `pdfjs-dist` upgraded from 4.0.379 to current 6.2.108; both npm audits report zero vulnerabilities; document initialization is fail-closed (`stopAtErrors: true`, XFA disabled) and retains `isEvalSupported: false` for APIs that expose the compatibility control. |
+| P0-SEC-001 | PASS | `pdfjs-dist` remains pinned at 6.2.108; both npm audits report zero vulnerabilities; document initialization is fail-closed (`stopAtErrors: true`) with XFA, PDF scripting (`enableScripting: false`), and eval compatibility (`isEvalSupported: false`) disabled. |
 | P1-FUN-001 | PASS | Vite emits a hashed local `pdf.worker.min-*.mjs` and same-origin CMap/ICC/font/WASM assets. Production CSP remains `worker-src 'self' blob:` without `unsafe-eval` or a public PDF CDN. |
 
-Automated evidence: six WP-FIN-01 Vitest regressions cover ordinary and malformed fixtures, eval defense, local worker/CSP, dependency range, and accepted-workspace preservation. `npm run test:pdf-build` verifies the emitted worker/assets and production CSP. A production-preview Playwright upload imported `tests/fixtures/ordinary.pdf` as one 65-character workspace item; the observed PDF runtime requests were only the same-origin `assets/pdf-*.js` and `assets/pdf.worker.min-*.mjs`, both HTTP 200. The only browser console error remained the pre-existing missing favicon 404.
+Automated evidence: six WP-FIN-01 Vitest regressions cover ordinary and malformed fixtures, eval/XFA/scripting defenses, local worker/CSP, dependency range, and accepted-workspace preservation. `npm run test:pdf-build` now also asserts that the emitted browser artifact sets `enableScripting` false. The prior production-browser PDF import evidence remains valid.
 
 Selected version rationale: 6.2.108 was the current npm release on 2026-08-29, is maintained upstream, is well beyond the vulnerable `<=4.1.392` range, declares compatibility with the repository's Node 24 runtime, and removes the vulnerable optional `canvas`/`node-pre-gyp`/`tar` chain from the active lock tree.
 
 ### WP-FIN-02 — Credential and Provider Boundary
 
-Status: **PASS**.
+Status: **CONDITIONAL / BLOCKED ON WP-FIN-03**.
 
 | Finding | Verdict | Evidence |
 | --- | --- | --- |
-| P0-SEC-002 | PASS | Removed Vite `define` secret substitution and all privileged Gemini SDK construction from browser code. Gemini requests now use the narrow same-origin `/api/provider` Node gateway; only the server reads `GEMINI_API_KEY`. Approved provider/action/model combinations and generation config fields are validated. |
-| P1-CRED-001 | PASS | DeepSeek owner secret is preferred server-side; optional BYOK is sent only to the same-origin gateway and remains memory-only. Legacy localStorage/session/auto-backup/downloaded-backup credential fields are purged or recursively sanitized without changing manuscript fields. |
+| P0-SEC-002 | CONDITIONAL / BLOCKED ON WP-FIN-03 | Browser secret substitution/client SDK construction remain removed. A real Node production entry serves `dist` and `/api/provider` without `vite preview`, but owner-key execution is deliberately unavailable until WP-FIN-03 supplies a server-side session/entitlement authorizer. The route returns `AUTHORIZATION_NOT_CONFIGURED` fail-closed; therefore this package is not yet production-safe for provider calls. |
+| P1-CRED-001 | PASS WITH WP-FIN-02 NOT FINALLY ACCEPTED | DeepSeek owner secret remains server-side; optional BYOK remains memory/request-only. Legacy localStorage/session/auto-backup/downloaded-backup credential fields are purged or recursively sanitized without changing manuscript fields. Network use remains blocked by the same WP-FIN-03 authorization dependency. |
 | P2-LOG-001 (credential scope) | PASS | One narrow credential redactor now protects global persisted logs, crash/unhandled-rejection paths, Story Engine diagnostics, and provider error normalization. Broader non-credential P2 log/content policy remains for WP-FIN-07. |
 
-Architecture evidence: the browser retains central model/role selection and existing retry/QA policy, while the stateless Node gateway executes only allowlisted Gemini or DeepSeek requests and creates no manuscript database or server persistence. Gemini non-streaming and NDJSON streaming paths preserve generation/safety configuration; browser cancellation closes the stream and aborts the server-side SDK request where supported. DeepSeek SSE streaming remains proxied through the same origin.
+Architecture evidence: `server/productionServer.ts` is bundled to `dist-server/productionServer.js`; `npm start` executes that artifact directly, binds `process.env.PORT` (safe default 8080), serves the React build with SPA fallback, and routes `/api/provider` to the existing `handleProviderGateway()` implementation. Both production and retained Vite middleware use a common HTTP adapter that requires a server-side authorization callback. No callback is installed in this package because sessions/entitlements belong to WP-FIN-03; there is intentionally no Origin/Referer/browser-secret/static-token substitute.
 
-Automated evidence: thirteen WP-FIN-02 Vitest regressions cover server-only secrets, safe missing-secret UX, normalized quota errors, Gemini/DeepSeek streaming and cancellation, malformed/model-bypass rejection, DeepSeek owner-secret preference, credential migration and safe snapshot serialization, no normal durable key write, durable-log redaction, and narrow prose-safe redaction. `npm run test:credential-build` built with Gemini and DeepSeek sentinel secrets and scanned 20 browser artifacts: zero sentinel leaks, no direct DeepSeek provider URL, and no Gemini SDK browser vendor chunk. Production-preview Playwright confirmed both health requests use same-origin `/api/provider`, missing secrets are shown explicitly, and no DeepSeek key is present in localStorage.
+Automated evidence: thirteen provider-engine/security regressions remain passing, and three new production-server regressions cover static React serving, explicit authorization-blocked and unauthorized responses, safe post-authorization missing-secret handling, and credential non-disclosure. `npm run test:production-server` starts the built Node artifact, fetches the React app, calls `/api/provider`, verifies the `node-production` response marker and fail-closed WP-FIN-03 dependency, and checks browser-observable output for sentinel credentials. `npm run test:credential-build` scans 20 browser artifacts with zero sentinel/provider-boundary leaks.
 
-#### Real Google AI Studio acceptance checklist (deferred until CEO code-package audit)
+#### Real Google AI Studio acceptance checklist (blocked until WP-FIN-03)
 
-- Configure `GEMINI_API_KEY` in **AI Studio Settings → Secrets**.
+- Install and test the WP-FIN-03 server-side session/entitlement authorizer; this is the blocking prerequisite.
+- Configure `GEMINI_API_KEY` in **AI Studio Settings → Secrets** only after that authority is active.
 - Confirm browser DevTools Sources cannot find the key and built browser artifacts contain no key.
 - Confirm provider Network request/response bodies never contain the server key.
 - Complete one ordinary Gemini request and one streaming request.
@@ -59,21 +60,21 @@ Automated evidence: thirteen WP-FIN-02 Vitest regressions cover server-only secr
 - Remove the secret temporarily and confirm the health/config UI shows the explicit server-configuration error.
 - Exercise a quota-limited mock/account state and confirm the browser still receives rate-limit semantics.
 
-WP-FIN-03 through WP-FIN-08 remain open; these PASS verdicts do not make the product release-ready.
+WP-FIN-03 through WP-FIN-08 remain open. WP-FIN-02 cannot receive final PASS until WP-FIN-03 supplies and tests the real server-side authorization authority.
 
-### Gate 3 authorized-scope verification record
+### Gate 3 CEO-rework verification record
 
 | Check | Result |
 | --- | --- |
-| Full Vitest | PASS — 20 files, 361/361 tests (baseline 342/342; +6 WP-FIN-01; +13 WP-FIN-02) |
+| Full Vitest | PASS — 21 files, 364/364 tests |
 | TypeScript | PASS — `npx tsc --noEmit` |
-| Production build | PASS — 877.67 kB largest application chunk; existing >500 kB P2 warning remains |
+| Production build | PASS — React build plus `dist-server/productionServer.js`; 877.69 kB largest application chunk; existing >500 kB P2 warning remains |
 | ESLint | Known debt unchanged exactly — 10 errors, 27 warnings |
 | Full npm audit | PASS — 0 vulnerabilities (baseline: 1 critical, 2 high) |
 | Runtime npm audit | PASS — 0 vulnerabilities (baseline: 1 critical, 2 high) |
-| PDF production artifact check | PASS — local worker/assets and restrictive CSP |
+| PDF production artifact check | PASS — scripting disabled, local worker/assets, restrictive CSP |
 | Credential production artifact check | PASS — 20 artifacts, 0 sentinel/provider-boundary leaks |
-| Production-preview browser checks | PASS — ordinary PDF import and explicit same-origin provider health/config behavior |
+| Production Node server smoke | PASS — built React app and fail-closed `/api/provider` served by Node; no Vite preview dependency; credential sentinels absent |
 
 ## Gate 1 — Product Definition Freeze
 
@@ -114,7 +115,7 @@ Status: **COMPLETE — release blockers open**.
 | ID | Finding and impact | Evidence |
 | --- | --- | --- |
 | P0-SEC-001 | **RESOLVED — WP-FIN-01 PASS.** Original malicious-PDF exposure is closed by current PDF.js, explicit eval defense, local assets, and failure isolation. | Gate 3 WP-FIN-01 evidence above. |
-| P0-SEC-002 | **RESOLVED — WP-FIN-02 PASS.** Browser secret substitution/client construction is removed; AI Studio server Secrets feed the same-origin gateway. | Gate 3 WP-FIN-02 evidence above. |
+| P0-SEC-002 | **CONDITIONAL — BLOCKED ON WP-FIN-03.** Browser credential exposure is removed and production wiring is real, but provider execution remains fail-closed until a server-side session/entitlement authority is installed. | Gate 3 WP-FIN-02 evidence above. |
 
 #### P1 — must close before final acceptance
 
@@ -125,7 +126,7 @@ Status: **COMPLETE — release blockers open**.
 | P1-DATA-001 | Full backup restore is not schema-validated or transactional. It clears the persisted current session after only checking that `files` is an array, then dereferences and applies untrusted nested fields. A malformed/incompatible backup can remove the last persisted session before restore fails or can inject invalid runtime state. | `src/hooks/fileHandler/fileBackupRestore.ts:30-51`; no backup version/schema validation or pre-commit rollback is present. |
 | P1-QA-001 | “Full tests” is not the full repository suite and has no browser/UI gate. Vitest is Node-only and includes only `tests/**/*.test.ts`; `src/services/storyEngine/storyEngineV3.test.ts` contains a separate 28-test manual harness that is not discovered, and its synchronous helper does not await async callbacks such as Test 17. | `vitest.config.ts:4-9`; `src/services/storyEngine/storyEngineV3.test.ts:20-30,350-351`; direct Vitest invocation reports “No test files found”; no Testing Library/Playwright/Cypress test suite exists. |
 | P1-RES-001 | User-controlled imports and restores have no file-count, compressed-size, expanded-size, page-count, or JSON-depth/size budgets. ZIP/DOCX/EPUB are expanded with `loadAsync` and PDF/backup files are read wholly into memory. Crafted or merely very large long-form inputs can freeze/crash the browser and jeopardize unsaved work. | `src/utils/file/parsers.ts:34-79,83-88,127-140,255-261`; `src/hooks/fileHandler/fileBackupRestore.ts:30`; no enforceable maximums were found. |
-| P1-CRED-001 | **RESOLVED — WP-FIN-02 PASS.** DeepSeek owner secret stays server-side; BYOK is memory/request-only and legacy durable copies are sanitized. | Gate 3 WP-FIN-02 evidence above. |
+| P1-CRED-001 | **IMPLEMENTED; WP-FIN-02 NOT FINALLY ACCEPTED.** DeepSeek owner secret stays server-side; BYOK is memory/request-only and legacy durable copies are sanitized. Provider network access is blocked pending WP-FIN-03 authorization. | Gate 3 WP-FIN-02 evidence above. |
 
 #### P2 — scheduled hardening/debt
 
@@ -136,7 +137,7 @@ Status: **COMPLETE — release blockers open**.
 | P2-TEST-001 | Passing tests write environment errors to stderr because `quotaManager` touches `localStorage` at module initialization in Node. This hides real signal and proves incomplete test isolation. | `npm test`: repeated `ReferenceError: localStorage is not defined` from `src/utils/quotaManager.ts:78,117` in otherwise passing suites. |
 | P2-DEP-001 | **RESOLVED INCIDENTALLY BY WP-FIN-01.** Upgrading the PDF runtime removed the obsolete optional `canvas`/`@mapbox/node-pre-gyp`/`tar` lock paths; full and runtime npm audits now report zero vulnerabilities. | Gate 3 verification record; `npm audit --json`; `npm audit --omit=dev --json`. |
 | P2-SAFE-001 | Translation content-safety probing explicitly fails open on provider error or quota exhaustion, returning `isSafe: true` for unknown outcomes. This is an undocumented product-policy choice and weakens isolation/routing diagnostics. | `src/services/workflows/translate/contentSafety.ts:85-95`. |
-| P2-LOG-001 | **CREDENTIAL SCOPE RESOLVED — WP-FIN-02 PASS.** Global persisted logs and Story Engine diagnostics share provider-credential redaction. Broader non-credential content/log policy remains scheduled. | `src/utils/secretRedaction.ts`; `src/utils/logStore.ts`; `src/services/storyEngine/diagnostics.ts`; WP-FIN-02 tests. |
+| P2-LOG-001 | **CREDENTIAL SUB-SCOPE IMPLEMENTED.** Global persisted logs and Story Engine diagnostics share provider-credential redaction. This does not override WP-FIN-02's authorization blocker; broader non-credential content/log policy remains scheduled. | `src/utils/secretRedaction.ts`; `src/utils/logStore.ts`; `src/services/storyEngine/diagnostics.ts`; WP-FIN-02 tests. |
 | P2-DOC-001 | README remains an AI Studio starter stub and does not document the frozen product, editions, security model, supported workflows, backup compatibility, release checks, or deployment/runbook. Dual npm/bun lockfiles also leave package-manager authority undefined. | `README.md`; `package-lock.json`; `bun.lock`. |
 | P2-LEGACY-001 | Previously accepted debt remains open: retire generic Story Engine runner adapters and add a repository-managed full production fixture when that artifact becomes tracked. | Predecessor `PROJECT_CONTROL.md` P2 register at `ccb52a4`. |
 

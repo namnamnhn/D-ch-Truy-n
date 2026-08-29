@@ -32,5 +32,6 @@ const browserArtifacts = [
 ].join('\n');
 assert(!/cdn\.jsdelivr\.net\/npm\/pdfjs-dist|unpkg\.com\/pdfjs-dist/i.test(browserArtifacts), 'PDF runtime still references a public CDN.');
 assert(browserArtifacts.includes(worker), 'Browser bundle does not reference the shipped PDF worker.');
+assert(/enableScripting:(?:!1|false)/.test(browserArtifacts), 'Production PDF initialization does not explicitly disable scripting.');
 
-console.log(`PDF build verification passed: ${worker}; CSP and local assets are contained.`);
+console.log(`PDF build verification passed: ${worker}; scripting disabled; CSP and local assets are contained.`);

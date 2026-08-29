@@ -11,6 +11,7 @@ export type SecurePdfDocumentOptions = {
   wasmUrl: string;
   stopAtErrors: true;
   enableXfa: false;
+  enableScripting: false;
   /** Fail-closed compatibility option for PDF.js APIs that expose eval control. */
   isEvalSupported: false;
 };
@@ -29,6 +30,7 @@ export const createSecurePdfDocumentOptions = (data: ArrayBuffer): SecurePdfDocu
   wasmUrl: localAssetUrl('wasm'),
   stopAtErrors: true,
   enableXfa: false,
+  enableScripting: false,
   isEvalSupported: false,
 });
 
