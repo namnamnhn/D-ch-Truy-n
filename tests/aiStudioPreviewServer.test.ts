@@ -115,4 +115,43 @@ describe('Google AI Studio Preview server adapter', () => {
     expect(rejectedAfterLogout.status).toBe(401);
     expect((await rejectedAfterLogout.json() as ProviderErrorPayload).error.code).toBe('UNAUTHORIZED');
   });
+
+  it('accepts browser-confirmed same-origin POSTs through a reverse proxy without accepting cross-site POSTs', async () => {
+    preview = await createAiStudioPreviewServer({ env: PREVIEW_ENV });
+    preview.httpServer.listen(0, '127.0.0.1');
+    await once(preview.httpServer, 'listening');
+    const address = preview.httpServer.address();
+    if (!address || typeof address === 'string') throw new Error('Expected a TCP address.');
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const proxiedSameOriginLogin = await fetch(`${origin}/api/auth/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: 'https://public-preview.example',
+        'Sec-Fetch-Site': 'same-origin',
+      },
+      body: JSON.stringify({ code: ACCESS_CODE }),
+    });
+    expect(proxiedSameOriginLogin.status).toBe(200);
+    expect(await proxiedSameOriginLogin.json() as AuthStatusResponse).toMatchObject({
+      authenticated: true,
+      status: 'AUTHENTICATED',
+    });
+
+    const crossSiteLogin = await fetch(`${origin}/api/auth/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: origin,
+        'Sec-Fetch-Site': 'cross-site',
+      },
+      body: JSON.stringify({ code: ACCESS_CODE }),
+    });
+    expect(crossSiteLogin.status).toBe(403);
+    expect(await crossSiteLogin.json() as AuthStatusResponse).toMatchObject({
+      authenticated: false,
+      status: 'UNAUTHORIZED_REQUEST',
+    });
+  });
 });

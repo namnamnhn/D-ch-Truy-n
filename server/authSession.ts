@@ -319,7 +319,14 @@ const writeAuthResponse = (
 };
 
 const isSameOriginRequest = (request: IncomingMessage): boolean => {
-  if (request.headers['sec-fetch-site'] === 'cross-site') return false;
+  const fetchSite = request.headers['sec-fetch-site'];
+  if (fetchSite === 'cross-site') return false;
+  // Sec-Fetch-Site is a browser-controlled forbidden request header. In a
+  // same-origin browser request routed through AI Studio's reverse proxy, the
+  // public Origin can legitimately differ from Node's internal Host. Trust the
+  // browser's explicit same-origin classification while retaining the strict
+  // Origin/Host comparison for clients that do not send Fetch Metadata.
+  if (fetchSite === 'same-origin') return true;
   const origin = request.headers.origin;
   if (!origin) return true;
   try {

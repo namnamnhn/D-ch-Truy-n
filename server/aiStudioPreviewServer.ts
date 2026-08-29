@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { createServer as createViteServer, type ViteDevServer } from 'vite';
-import { AUTH_STATUS_PATH } from '../shared/authContract';
+import { AUTH_LOGIN_PATH, AUTH_STATUS_PATH } from '../shared/authContract';
 import { PROVIDER_GATEWAY_PATH } from '../shared/providerContract';
 import {
   AuthSessionAuthority,
@@ -62,6 +62,7 @@ export async function createAiStudioPreviewServer(
     server: { middlewareMode: true },
   });
   let observedAuthStatus = false;
+  let observedAuthLogin = false;
 
   const httpServer = createServer((request, response) => {
     const pathname = (request.url || '').split('?')[0];
@@ -73,6 +74,13 @@ export async function createAiStudioPreviewServer(
       response.once('finish', () => {
         const contentType = response.getHeader('content-type') || 'unset';
         console.log(`AI_STUDIO_AUTH_STATUS_REACHED status=${response.statusCode} content-type=${contentType}`);
+      });
+    }
+    if (pathname === AUTH_LOGIN_PATH && !observedAuthLogin && env.NODE_ENV !== 'test') {
+      observedAuthLogin = true;
+      response.once('finish', () => {
+        const contentType = response.getHeader('content-type') || 'unset';
+        console.log(`AI_STUDIO_AUTH_LOGIN_REACHED status=${response.statusCode} content-type=${contentType}`);
       });
     }
     const operation = isAuthPath(pathname)
