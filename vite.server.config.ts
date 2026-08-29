@@ -3,12 +3,14 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   build: {
     ssr: 'server/productionServer.ts',
-    outDir: 'dist-server',
-    emptyOutDir: true,
+    // AI Studio deploys the dist directory as one full-stack runtime package.
+    // Keep the client build produced by the first Vite pass intact.
+    outDir: 'dist',
+    emptyOutDir: false,
     target: 'node20',
     rollupOptions: {
       output: {
-        entryFileNames: 'productionServer.js',
+        entryFileNames: 'server.mjs',
       },
     },
   },

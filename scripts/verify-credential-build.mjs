@@ -12,6 +12,7 @@ process.env.APP_ACCESS_CODE_HASH = sentinelAccessHash;
 process.env.SESSION_SIGNING_SECRET = sentinelSigningSecret;
 
 await build({ logLevel: 'warn' });
+await build({ configFile: path.resolve('vite.server.config.ts'), logLevel: 'warn' });
 
 const dist = path.resolve('dist');
 const files = [];
@@ -19,10 +20,14 @@ async function walk(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const target = path.join(directory, entry.name);
     if (entry.isDirectory()) await walk(target);
-    else if (/\.(?:js|mjs|cjs|html|css|json|map)$/i.test(entry.name)) files.push(target);
+    else if (target !== path.join(dist, 'server.mjs') && /\.(?:js|mjs|cjs|html|css|json|map)$/i.test(entry.name)) files.push(target);
   }
 }
 await walk(dist);
+
+if (!files.length || !(await readdir(dist)).includes('server.mjs')) {
+  throw new Error('Credential verification did not retain the packaged Node server artifact.');
+}
 
 for (const file of files) {
   const content = await readFile(file, 'utf8');

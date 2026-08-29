@@ -16,6 +16,7 @@ import {
 
 const DEFAULT_PORT = 8080;
 const DEFAULT_BUILD_DIRECTORY = fileURLToPath(new URL('../dist/', import.meta.url));
+const SERVER_ARTIFACT_NAME = path.basename(fileURLToPath(import.meta.url));
 const CONTENT_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -70,6 +71,12 @@ async function serveStatic(
   }
 
   const relativePath = pathname.replace(/^\/+/, '');
+  // The Node runtime is packaged next to public files, but must not be served
+  // as a browser asset.
+  if (relativePath === SERVER_ARTIFACT_NAME) {
+    sendText(response, 404, 'Not Found');
+    return;
+  }
   const requestedPath = path.resolve(buildDirectory, relativePath || 'index.html');
   const rootPrefix = `${path.resolve(buildDirectory)}${path.sep}`;
   if (requestedPath !== path.resolve(buildDirectory) && !requestedPath.startsWith(rootPrefix)) {

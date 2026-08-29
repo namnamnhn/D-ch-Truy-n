@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build && vite build --config vite.server.config.ts",
-    "start": "node dist-server/productionServer.js",
+    "start": "node dist/server.mjs",
     "lint": "eslint .",
     "test": "vitest run",
     "test:pdf-build": "node scripts/verify-pdf-build.mjs",
