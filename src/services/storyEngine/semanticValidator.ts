@@ -92,15 +92,10 @@ function parseViolation(value: unknown, context: string): StoryViolation {
   if (!message) throw new Error(`${context}.message must be a non-empty string.`);
   const optionalText = (key: string): string | undefined => {
     if (value[key] === undefined) return undefined;
-    const text = normalizeText(value[key]);
-    if (!text) throw new Error(`${context}.${key} must be a non-empty string when present.`);
-    return text;
+    return normalizeText(value[key]) || undefined;
   };
   const chapterNumber = value.chapterNumber === undefined
     ? undefined : normalizePositiveInteger(value.chapterNumber) || undefined;
-  if (value.chapterNumber !== undefined && chapterNumber === undefined) {
-    throw new Error(`${context}.chapterNumber must be a positive integer when present.`);
-  }
   return makeStoryViolation({
     type: canonicalType,
     severity: canonicalSeverity,

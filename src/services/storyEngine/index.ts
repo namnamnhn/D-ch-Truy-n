@@ -10,6 +10,7 @@ export * from './styleLinter';
 export * from './validator';
 export * from './semanticValidator';
 export * from './autoRepair';
+export * from './diagnostics';
 export * from './stateExtractor';
 export * from './memoryManager';
 export * from './pipeline';

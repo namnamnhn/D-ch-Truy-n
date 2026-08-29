@@ -11,7 +11,8 @@ import {
     mergeExtractedCharacters,
     runStoryEngineSanityCheck,
     canReuseDerivedState,
-    compatibleMemories
+    compatibleMemories,
+    sanitizeValidationResultForDiagnostics
 } from '../../services/storyEngine';
 
 export type EngineProgressInfo = PipelineProgressInfo;
@@ -513,6 +514,10 @@ ${textContent}`,
             });
 
             if (!result.success) {
+                setState(prev => ({
+                    ...prev,
+                    lastValidationResult: sanitizeValidationResultForDiagnostics(result.validationResult, result.nextControl)
+                }));
                 addToast(result.errorMessage || 'Lượt viết không vượt qua hậu kiểm QA.', 'error');
                 return;
             }
@@ -530,7 +535,7 @@ ${textContent}`,
                 storyState: result.nextState,
                 continuitySummary: result.updatedContinuitySummary,
                 memoryIndex: result.nextMemories,
-                lastValidationResult: result.validationResult,
+                lastValidationResult: sanitizeValidationResultForDiagnostics(result.validationResult, result.nextControl),
                 snapshots: pushSnapshot(prev.snapshots)
             }));
 

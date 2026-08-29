@@ -334,6 +334,9 @@ function normalizeValidationResult(value: unknown): ValidationResult | undefined
     const message = normalizeText(entry.message) || normalizeText(entry.reason) || 'Imported story validation issue.';
     const evidence = normalizeText(entry.evidence) || normalizeText(entry.quoteOrDescription) || undefined;
     const suggestedRepair = normalizeText(entry.suggestedRepair) || normalizeText(entry.repairInstruction) || undefined;
+    const relatedRuleId = normalizeText(entry.relatedRuleId) || undefined;
+    const relatedCharacter = normalizeText(entry.relatedCharacter) || undefined;
+    const relatedThreadId = normalizeText(entry.relatedThreadId) || undefined;
     return {
       type: violationTypes.find(type => type === entry.type) || 'WORLD_FACT_CONTRADICTION',
       severity,
@@ -341,6 +344,9 @@ function normalizeValidationResult(value: unknown): ValidationResult | undefined
       message,
       evidence,
       suggestedRepair,
+      relatedRuleId,
+      relatedCharacter,
+      relatedThreadId,
       chapter: chapterNumber,
       quoteOrDescription: evidence || message,
       reason: message,
