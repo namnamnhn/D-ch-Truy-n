@@ -1,8 +1,8 @@
 import { CreativeChapter } from '../../types';
-import { BatchPlan, StoryControl, StoryViolation, StoryViolationType } from './types';
+import { BatchPlan, StoryBible, StoryControl, StoryViolation, StoryViolationType } from './types';
 import { validateWriterOutput } from './writer';
 import { collectHiddenStoryStrings, redactHiddenStoryText } from './diagnostics';
-import { createOutputLanguageContract } from './languageContract';
+import { createWriterOutputLanguageContract } from './languageContract';
 import { formatChapterPacingTarget, getChapterPacingTarget } from './pacingContract';
 
 export interface SafeRepairViolation {
@@ -117,7 +117,8 @@ export async function repairBatchOutput(
   batchPlan: BatchPlan,
   writerContext: string,
   control: StoryControl,
-  runner: (prompt: string, systemInstruction: string) => Promise<string>
+  runner: (prompt: string, systemInstruction: string) => Promise<string>,
+  bible?: StoryBible
 ): Promise<{ chapters: CreativeChapter[]; rawOutput: string }> {
   const requested = batchPlan.chapters.map(chapter => chapter.chapterNumber);
   const pacingTarget = getChapterPacingTarget(control);
@@ -134,7 +135,7 @@ Return only: <CHAPTER number="X" title="Chương X: Tiêu đề">complete prose<
     maximumWords: pacingTarget.max,
     softMinimumWords: pacingTarget.soft,
     neverPadWithFiller: pacingTarget.neverPadWithFiller,
-    outputLanguage: createOutputLanguageContract(control)
+    outputLanguage: createWriterOutputLanguageContract(control, bible, Math.min(...requested))
   });
   return { chapters: parsed.chapters, rawOutput };
 }

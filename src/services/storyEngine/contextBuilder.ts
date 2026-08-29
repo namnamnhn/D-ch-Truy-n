@@ -10,7 +10,7 @@ import {
   StoryState
 } from './types';
 import { createEmptyInBatchContinuityLock, extendInBatchContinuityLock, formatInBatchContinuityLock } from './continuityLock';
-import { createOutputLanguageContract, formatOutputLanguageContract } from './languageContract';
+import { createWriterOutputLanguageContract, formatOutputLanguageContract } from './languageContract';
 import { calculateArcProgress } from './arcController';
 import { formatMemoriesForContext, retrieveRelevantMemories, sanitizeMemoriesForReader } from './memoryManager';
 import {
@@ -264,7 +264,9 @@ export function buildWriterContext(
   const projectionPayload = views.map(({ relevantMemories: _relevantMemories, ...view }) => view);
   const uniqueMemories = Array.from(new Map(views.flatMap(view => view.relevantMemories)
     .map(memory => [memory.id || `chapter_${memory.chapterNumber}`, memory])).values());
-  const languageContract = createOutputLanguageContract(control, bible);
+  // A single contract precedes every projected view, so scope it to the
+  // earliest chapter and never reveal a term unlocked only later in the batch.
+  const languageContract = createWriterOutputLanguageContract(control, bible, Math.min(...chapters));
   return `=== LONG-FORM STORY ENGINE V3: WRITER PROJECTION ===
 
 ${formatOutputLanguageContract(languageContract)}

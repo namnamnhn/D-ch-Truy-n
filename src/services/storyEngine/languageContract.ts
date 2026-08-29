@@ -1,4 +1,5 @@
 import { StoryBible, StoryControl } from './types';
+import { projectCharactersForChapter } from './storyAccess';
 
 export interface OutputLanguageContract {
   targetLanguage: string;
@@ -72,20 +73,31 @@ function collectAllowlistedTerms(value: unknown, output: Set<string>): void {
   }
 }
 
-export function createOutputLanguageContract(
+function characterTerms(character: { name?: string; aliasSet?: string[]; aliases?: string[] }): string[] {
+  return [character.name, ...(character.aliasSet || []), ...(character.aliases || [])]
+    .filter((term): term is string => typeof term === 'string' && Boolean(term.trim()))
+    .map(term => term.trim());
+}
+
+function normalizedIdentity(value: string): string {
+  return value.normalize('NFKC').toLocaleLowerCase('und').replace(/\s+/g, ' ').trim();
+}
+
+function termExposesIdentity(term: string, identity: string): boolean {
+  const candidate = normalizedIdentity(term);
+  const hidden = normalizedIdentity(identity);
+  if (!candidate || !hidden) return false;
+  if (candidate === hidden) return true;
+  if (hidden.length < 2) return false;
+  const escaped = hidden.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?:$|[^\\p{L}\\p{N}])`, 'u').test(candidate);
+}
+
+function buildOutputLanguageContract(
   control: StoryControl,
-  bible?: StoryBible
+  bible: StoryBible | undefined,
+  permitted: Set<string>
 ): OutputLanguageContract {
-  const permitted = new Set<string>();
-  collectAllowlistedTerms(control.settings, permitted);
-  collectAllowlistedTerms(bible?.storyEngineSettingsV3, permitted);
-  for (const character of Object.values(control.characterRegistry || {})) {
-    if (character.name?.trim()) permitted.add(character.name.trim());
-    for (const alias of [...(character.aliasSet || []), ...(character.aliases || [])]) {
-      if (alias?.trim()) permitted.add(alias.trim());
-    }
-  }
-  for (const character of bible?.characters || []) if (character.name?.trim()) permitted.add(character.name.trim());
   const targetLanguage = stringSetting(control, bible, LANGUAGE_KEYS) || 'Vietnamese';
   const foldedLanguage = targetLanguage.toLocaleLowerCase('en-US');
   const allowedScripts = new Set<OutputLanguageContract['allowedScripts'][number]>(['LATIN']);
@@ -106,6 +118,58 @@ export function createOutputLanguageContract(
     permittedForeignTerms: [...permitted],
     allowedScripts: [...allowedScripts]
   };
+}
+
+/** Full authoritative contract for Validator-side checks. Never serialize it into Writer context. */
+export function createOutputLanguageContract(
+  control: StoryControl,
+  bible?: StoryBible
+): OutputLanguageContract {
+  const permitted = new Set<string>();
+  collectAllowlistedTerms(control.settings, permitted);
+  collectAllowlistedTerms(bible?.storyEngineSettingsV3, permitted);
+  for (const character of Object.values(control.characterRegistry || {})) {
+    for (const term of characterTerms(character)) permitted.add(term);
+  }
+  for (const character of bible?.characters || []) if (character.name?.trim()) permitted.add(character.name.trim());
+  return buildOutputLanguageContract(control, bible, permitted);
+}
+
+/**
+ * Writer-safe, chapter-scoped contract. Only character terms present in the
+ * reader-safe projection are eligible. Explicit author allowlists are also
+ * filtered against every still-hidden name/alias before serialization.
+ */
+export function createWriterOutputLanguageContract(
+  control: StoryControl,
+  bible: StoryBible | undefined,
+  chapter: number
+): OutputLanguageContract {
+  const projected = projectCharactersForChapter(control, chapter).available;
+  const visibleTerms = new Set<string>();
+  for (const character of projected) {
+    for (const term of characterTerms(character)) visibleTerms.add(term);
+  }
+  const visibleIdentities = new Set([...visibleTerms].map(normalizedIdentity));
+  const hiddenTerms = new Set<string>();
+  for (const character of Object.values(control.characterRegistry || {})) {
+    for (const term of characterTerms(character)) {
+      if (!visibleIdentities.has(normalizedIdentity(term))) hiddenTerms.add(term);
+    }
+  }
+  for (const character of bible?.characters || []) {
+    if (character.name?.trim() && !visibleIdentities.has(normalizedIdentity(character.name))) {
+      hiddenTerms.add(character.name.trim());
+    }
+  }
+
+  const explicitTerms = new Set<string>();
+  collectAllowlistedTerms(control.settings, explicitTerms);
+  collectAllowlistedTerms(bible?.storyEngineSettingsV3, explicitTerms);
+  const permitted = new Set([...explicitTerms].filter(term =>
+    ![...hiddenTerms].some(hidden => termExposesIdentity(term, hidden))));
+  for (const term of visibleTerms) permitted.add(term);
+  return buildOutputLanguageContract(control, bible, permitted);
 }
 
 function rangeIsAllowlisted(content: string, start: number, end: number, allowlist: string[]): boolean {

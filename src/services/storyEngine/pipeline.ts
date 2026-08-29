@@ -26,7 +26,7 @@ import { makeStoryViolation, qaUnavailableResult } from './semanticValidator';
 import { getStoryModelRoute } from './modelRouting';
 import { compactMemoryIndex } from './memoryManager';
 import { formatSemanticQaDiagnosticLines } from './diagnostics';
-import { createOutputLanguageContract } from './languageContract';
+import { createWriterOutputLanguageContract } from './languageContract';
 import { createEmptyInBatchContinuityLock, extendInBatchContinuityLock } from './continuityLock';
 import { getChapterPacingTarget, normalizeStoryControlPacing } from './pacingContract';
 
@@ -317,8 +317,7 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
     idealWords: pacingTarget.ideal,
     maximumWords: pacingTarget.max,
     softMinimumWords: pacingTarget.soft,
-    neverPadWithFiller: pacingTarget.neverPadWithFiller,
-    outputLanguage: createOutputLanguageContract(control, bible)
+    neverPadWithFiller: pacingTarget.neverPadWithFiller
   };
   try {
     // No chapter is persisted here; all outputs remain local until the entire batch passes.
@@ -333,7 +332,7 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
         writerContext,
         chapterPlan,
         (prompt, sys) => roleRunner('WRITER')(prompt, sys),
-        writerContract
+        { ...writerContract, outputLanguage: createWriterOutputLanguageContract(control, bible, chapter) }
       );
       generatedChapters.push(...result.chapters);
       generatedCharacters.push(...result.newCharacters);
@@ -397,7 +396,8 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
           singleChapterPlan(batchPlan, chapter),
           repairWriterContext,
           control,
-          (prompt, sys) => roleRunner('AUTO_REPAIR')(prompt, sys)
+          (prompt, sys) => roleRunner('AUTO_REPAIR')(prompt, sys),
+          bible
         );
         generatedChapters[index] = repaired.chapters[0];
         rawOutputs.set(chapter, repaired.rawOutput);
