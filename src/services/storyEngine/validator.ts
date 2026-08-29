@@ -1,240 +1,281 @@
 import { CreativeChapter } from '../../types';
-import { StoryBible, StoryControl, StoryState, BatchPlan, ValidationResult, Violation, ViolationType } from './types';
+import {
+  BatchPlan,
+  JsonValue,
+  StoryBible,
+  StoryControl,
+  StoryState,
+  StoryValidationResult,
+  StoryViolation
+} from './types';
 import { lintChapterProse } from './styleLinter';
-import { getCurrentArc, calculateArcProgress, filterCharactersForChapter, filterSpoilersForChapter } from './arcController';
+import { filterCharactersForChapter, filterSpoilersForChapter } from './arcController';
+import { buildValidatorContext } from './contextBuilder';
+import { getCharacterAccess, projectExposureRules, projectWorldFactsForChapter } from './storyAccess';
+import {
+  canonicalizeStoryValidation,
+  makeStoryViolation,
+  qaUnavailableResult,
+  runSemanticValidation,
+  SemanticRunner
+} from './semanticValidator';
 
-/**
- * Semantic Validator V3 (Fail-Closed):
- * Kết hợp Deterministic Checks và Semantic AI QA.
- * Bất kỳ vi phạm nghiêm trọng nào (nhân vật bị gate xuất hiện, spoiler rò rỉ, quên thương tích)
- * đều sẽ kích hoạt FAIL để chuyển sang AutoRepair.
- */
+function configuredBoolean(control: StoryControl, key: string): boolean {
+  const value = control.settings?.[key];
+  return value === true;
+}
+
+function configuredNumber(control: StoryControl, key: string): number | undefined {
+  const value = control.settings?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function collectConfiguredStrings(value: JsonValue | undefined, keys: Set<string>, output = new Set<string>()): Set<string> {
+  if (Array.isArray(value)) {
+    for (const item of value) collectConfiguredStrings(item, keys, output);
+    return output;
+  }
+  if (!value || typeof value !== 'object') return output;
+  for (const [key, child] of Object.entries(value)) {
+    if (keys.has(key.toLocaleLowerCase('en-US')) && Array.isArray(child)) {
+      for (const item of child) if (typeof item === 'string' && item.trim()) output.add(item.trim());
+    }
+    collectConfiguredStrings(child, keys, output);
+  }
+  return output;
+}
+
+function containsConfiguredText(content: string, configured: string): boolean {
+  return configured.length >= 2
+    && content.toLocaleLowerCase('vi-VN').includes(configured.toLocaleLowerCase('vi-VN'));
+}
+
+function chapterNumberOf(chapter: CreativeChapter, fallback: number): number {
+  return chapter.chapterNumber || fallback;
+}
+
+function deterministicViolation(input: Parameters<typeof makeStoryViolation>[0]): StoryViolation {
+  return makeStoryViolation(input);
+}
+
+export function validateDeterministicBatchOutput(
+  chapters: CreativeChapter[],
+  batchPlan: BatchPlan,
+  control: StoryControl,
+  state: StoryState,
+  bible: StoryBible
+): StoryValidationResult {
+  const violations: StoryViolation[] = [];
+  const warnings: StoryViolation[] = [];
+  const requested = batchPlan.requestedChapterNumbers || batchPlan.chapters.map(chapter => chapter.chapterNumber);
+  const forbiddenProperNouns = collectConfiguredStrings(control.settings, new Set(['forbiddenpropernouns']));
+  collectConfiguredStrings(control.originality, new Set(['forbiddenpropernouns']), forbiddenProperNouns);
+  const bannedPhrases = collectConfiguredStrings(control.settings, new Set([
+    'bannedphrases', 'forbiddenphrases', 'explicitbannedphrases'
+  ]));
+  collectConfiguredStrings(control.originality, new Set([
+    'bannedphrases', 'forbiddenphrases', 'explicitbannedphrases'
+  ]), bannedPhrases);
+
+  const actualNumbers = chapters.map((chapter, index) => chapterNumberOf(chapter, batchPlan.startChapter + index));
+  if (actualNumbers.length !== requested.length
+    || requested.some(number => !actualNumbers.includes(number))
+    || new Set(actualNumbers).size !== actualNumbers.length) {
+    violations.push(deterministicViolation({
+      type: 'OUTPUT_STRUCTURE', severity: 'CRITICAL', chapterNumber: batchPlan.startChapter,
+      message: `Generated batch does not contain the exact requested chapters [${requested.join(', ')}].`,
+      suggestedRepair: 'Regenerate the exact requested chapter envelopes.'
+    }));
+  }
+
+  const lintResult = lintChapterProse(chapters, []);
+  for (const issue of lintResult.violations) {
+    warnings.push(deterministicViolation({
+      type: 'ORIGINALITY_VIOLATION', severity: 'LOW', chapterNumber: batchPlan.startChapter,
+      message: 'Configured prose/style lint reported an issue.', evidence: issue,
+      suggestedRepair: 'Normalize the affected prose without changing story facts.'
+    }));
+  }
+
+  for (let index = 0; index < chapters.length; index++) {
+    const chapter = chapters[index];
+    const chapterNumber = chapterNumberOf(chapter, batchPlan.startChapter + index);
+    const content = chapter.content || '';
+    const plan = batchPlan.chapters.find(candidate => candidate.chapterNumber === chapterNumber);
+    if (!plan) {
+      violations.push(deterministicViolation({
+        type: 'PLAN_VIOLATION', severity: 'CRITICAL', chapterNumber,
+        message: 'No approved ChapterPlan exists for this generated chapter.',
+        suggestedRepair: 'Stop and regenerate an approved plan before writing.'
+      }));
+    }
+    if (!content.trim() || /<\/?(?:SYSTEM|CONTROL|METADATA|STORY_CONTROL)\b/i.test(content)) {
+      violations.push(deterministicViolation({
+        type: 'OUTPUT_STRUCTURE', severity: 'CRITICAL', chapterNumber,
+        message: 'Chapter prose is empty or contains leaked control metadata.',
+        evidence: content.slice(0, 160), suggestedRepair: 'Return prose only inside the chapter envelope.'
+      }));
+    }
+
+    const { lockedCharacters } = filterCharactersForChapter(
+      bible.characters || [], control.characterGates || [], chapterNumber, control
+    );
+    const lockedNames = new Map(lockedCharacters.map(character => [character.characterName, character.unlockAtChapter]));
+    for (const character of Object.values(control.characterRegistry || {})) {
+      const access = getCharacterAccess(control, character, chapterNumber);
+      if (!access.canAppearDirectly) lockedNames.set(character.name, access.directAppearanceChapter);
+    }
+    for (const [name, unlockChapter] of lockedNames) {
+      if (!name || name.length < 2 || !containsConfiguredText(content, name)) continue;
+      violations.push(deterministicViolation({
+        type: 'CHARACTER_GATE', severity: 'HIGH', chapterNumber,
+        message: `A character appears before the direct-appearance gate at chapter ${unlockChapter}.`,
+        evidence: name, relatedCharacter: name,
+        suggestedRepair: 'Remove the premature direct appearance or use an approved present character.'
+      }));
+    }
+
+    const { forbiddenSpoilers } = filterSpoilersForChapter(control.spoilerGates || [], chapterNumber);
+    for (const spoiler of forbiddenSpoilers) {
+      if (!containsConfiguredText(content, spoiler.description)) continue;
+      violations.push(deterministicViolation({
+        type: 'SPOILER_LEAK', severity: 'HIGH', chapterNumber,
+        message: `An explicitly gated spoiler appears before chapter ${spoiler.forbiddenBeforeChapter}.`,
+        evidence: spoiler.description, relatedRuleId: spoiler.id,
+        suggestedRepair: 'Remove the explicit reveal and preserve uncertainty.'
+      }));
+    }
+
+    const exposure = projectExposureRules(control, chapterNumber, true);
+    for (const forbiddenEvidence of exposure.forbiddenEvidence) {
+      if (!containsConfiguredText(content, forbiddenEvidence)) continue;
+      violations.push(deterministicViolation({
+        type: 'PREMATURE_EVIDENCE', severity: 'HIGH', chapterNumber,
+        message: 'Prose directly includes evidence forbidden by the active exposure gate.',
+        evidence: forbiddenEvidence,
+        relatedRuleId: exposure.ruleIds.join(','),
+        suggestedRepair: 'Remove the forbidden evidence while retaining only evidence allowed at this chapter.'
+      }));
+    }
+    for (const forbiddenInference of exposure.forbiddenInferences) {
+      if (!containsConfiguredText(content, forbiddenInference)) continue;
+      violations.push(deterministicViolation({
+        type: 'PREMATURE_INFERENCE', severity: 'HIGH', chapterNumber,
+        message: 'Prose explicitly states an inference forbidden by the active exposure gate.',
+        evidence: forbiddenInference,
+        relatedRuleId: exposure.ruleIds.join(','),
+        suggestedRepair: 'Keep the conclusion at the permitted level of suspicion.'
+      }));
+    }
+
+    for (const fact of projectWorldFactsForChapter(control, chapterNumber).locked) {
+      if (fact.id.length < 4 || !containsConfiguredText(content, fact.id)) continue;
+      violations.push(deterministicViolation({
+        type: 'WORLD_FACT_GATE_VIOLATION', severity: 'HIGH', chapterNumber,
+        message: 'Chapter prose contains the exact identifier of a locked world fact.',
+        evidence: fact.id, relatedRuleId: fact.id,
+        suggestedRepair: 'Remove the locked fact reference and use only currently available world knowledge.'
+      }));
+    }
+
+    for (const properNoun of forbiddenProperNouns) {
+      if (!containsConfiguredText(content, properNoun)) continue;
+      violations.push(deterministicViolation({
+        type: 'REAL_WORLD_CONTAMINATION', severity: 'HIGH', chapterNumber,
+        message: 'Chapter prose contains an explicitly forbidden proper noun.',
+        evidence: properNoun,
+        suggestedRepair: 'Replace the reference with world-native material consistent with the approved plan.'
+      }));
+    }
+    for (const phrase of bannedPhrases) {
+      if (!containsConfiguredText(content, phrase)) continue;
+      violations.push(deterministicViolation({
+        type: 'ORIGINALITY_VIOLATION', severity: 'MEDIUM', chapterNumber,
+        message: 'Chapter prose contains an explicitly banned phrase.', evidence: phrase,
+        suggestedRepair: 'Rewrite the sentence in a specific, world-native voice.'
+      }));
+    }
+
+    const wordCount = content.trim() ? content.trim().split(/\s+/).length : 0;
+    const minimum = control.pacingRules?.minWordsPerChapter || 1500;
+    if (wordCount < minimum) {
+      warnings.push(deterministicViolation({
+        type: 'WORD_COUNT_DEFICIT', severity: 'LOW', chapterNumber,
+        message: `Chapter has ${wordCount} words; configured minimum is ${minimum}.`,
+        suggestedRepair: 'Expand only plan-relevant action, description, or dialogue.'
+      }));
+    }
+  }
+
+  const activeInjuries = Object.values(state.characterStates || {}).flatMap(characterState =>
+    (characterState.injuries || [])
+      .filter(injury => injury.status !== 'recovered'
+        && (injury.severity === 'severe' || injury.severity === 'critical'))
+      .map(injury => ({ name: characterState.name, injury }))
+  );
+  for (let index = 0; index < chapters.length; index++) {
+    const chapter = chapters[index];
+    const chapterNumber = chapterNumberOf(chapter, batchPlan.startChapter + index);
+    const content = chapter.content || '';
+    for (const { name, injury } of activeInjuries) {
+      if (!containsConfiguredText(content, name)) continue;
+      const combat = /(?:xuất toàn lực|nhảy vọt lên|vung kiếm chém mạnh|tung quyền như vũ bão|phi thân tốc biến)/iu;
+      if (combat.test(content) && !/(?:vết thương|đau)/iu.test(content)) {
+        violations.push(deterministicViolation({
+          type: 'INJURY_AMNESIA', severity: 'HIGH', chapterNumber,
+          message: `A severe injury is still active; recovery chapter ${injury.expectedRecoveryChapter} was only an expectation.`,
+          relatedCharacter: name,
+          suggestedRepair: 'Show the movement restriction, pain, tactical limitation, or credible cost.'
+        }));
+      }
+    }
+  }
+
+  return canonicalizeStoryValidation(true, violations, warnings, {
+    strictLowSeverity: configuredBoolean(control, 'strictLowSeverity')
+  });
+}
+
+export function mergeValidationLayers(
+  deterministic: StoryValidationResult,
+  semantic: StoryValidationResult,
+  control: StoryControl
+): StoryValidationResult {
+  if (semantic.status === 'QA_UNAVAILABLE') {
+    return {
+      ...semantic,
+      violations: [...deterministic.violations, ...semantic.violations],
+      warnings: [...(deterministic.warnings || []), ...(semantic.warnings || [])]
+    };
+  }
+  const merged = canonicalizeStoryValidation(
+    deterministic.pass && semantic.pass,
+    [...deterministic.violations, ...semantic.violations],
+    [...(deterministic.warnings || []), ...(semantic.warnings || [])],
+    { strictLowSeverity: configuredBoolean(control, 'strictLowSeverity'), attempts: semantic.attempts }
+  );
+  return { ...merged, modelRole: semantic.modelRole };
+}
+
 export async function validateBatchOutput(
   chapters: CreativeChapter[],
   batchPlan: BatchPlan,
   control: StoryControl,
   state: StoryState,
   bible: StoryBible,
-  runner?: (prompt: string, sys: string) => Promise<string>
-): Promise<ValidationResult> {
-  const violations: Violation[] = [];
-  const startCh = batchPlan.startChapter;
-  const currentArc = getCurrentArc(control, startCh);
-
-  const semanticChecks = {
-    characterGating: true,
-    worldFactContinuity: true,
-    spoilerContainment: true,
-    pacingIntegrity: true,
-    characterTraitConsistency: true
-  };
-
-  // 1. DETERMINISTIC STYLE LINTING
-  const lintResult = lintChapterProse(chapters, []);
-  for (const lv of lintResult.violations) {
-    violations.push({
-      type: 'WORD_COUNT_DEFICIT',
-      severity: 'WARNING',
-      chapter: startCh,
-      quoteOrDescription: lv,
-      reason: 'Vi phạm quy tắc văn phong hoặc độ dài chương.',
-      repairInstruction: 'Chuẩn hóa câu từ và loại bỏ rác/thẻ hệ thống nếu có.'
+  runner?: SemanticRunner,
+  priorChapters: CreativeChapter[] = []
+): Promise<StoryValidationResult> {
+  try {
+    const deterministic = validateDeterministicBatchOutput(chapters, batchPlan, control, state, bible);
+    const prompt = buildValidatorContext(control, batchPlan, state, batchPlan.startChapter, chapters, priorChapters);
+    const semantic = await runSemanticValidation(prompt, runner, {
+      maxAttempts: 2,
+      timeoutMs: configuredNumber(control, 'semanticQaTimeoutMs'),
+      strictLowSeverity: configuredBoolean(control, 'strictLowSeverity')
     });
+    return mergeValidationLayers(deterministic, semantic, control);
+  } catch {
+    return qaUnavailableResult(0, 'Story QA infrastructure failed before a trustworthy verdict was produced.');
   }
-
-  // 2. DETERMINISTIC CHARACTER GATING & SPOILER GATING CHECKS
-  const { lockedCharacters } = filterCharactersForChapter(
-    bible.characters || [],
-    control.characterGates || [],
-    startCh,
-    control
-  );
-
-  const { forbiddenSpoilers } = filterSpoilersForChapter(
-    control.spoilerGates || [],
-    startCh
-  );
-
-  for (let i = 0; i < chapters.length; i++) {
-    const ch = chapters[i];
-    const chNum = startCh + i;
-    const content = ch.content || '';
-
-    // A. Kiểm tra nhân vật bị khóa xuất hiện
-    for (const locked of lockedCharacters) {
-      const name = locked.characterName;
-      if (!name || name.length < 2) continue;
-      const regex = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-      if (regex.test(content)) {
-        semanticChecks.characterGating = false;
-        violations.push({
-          type: 'CHARACTER_GATE',
-          severity: 'CRITICAL',
-          chapter: chNum,
-          quoteOrDescription: `Nhân vật "${name}" xuất hiện trong Chương ${chNum}`,
-          reason: `Nhân vật "${name}" bị khóa cho tới chương ${locked.unlockAtChapter}.`,
-          repairInstruction: `Xóa sự xuất hiện của "${name}" hoặc thay bằng nhân vật phụ vô danh.`
-        });
-      }
-    }
-
-    // B. Kiểm tra Spoiler Leak
-    for (const secret of forbiddenSpoilers) {
-      const descWords = secret.description.toLowerCase().split(/\s+/).filter(w => w.length > 4);
-      let matchCount = 0;
-      for (const w of descWords) {
-        if (content.toLowerCase().includes(w)) matchCount++;
-      }
-      if (descWords.length >= 3 && matchCount >= Math.ceil(descWords.length * 0.8)) {
-        semanticChecks.spoilerContainment = false;
-        violations.push({
-          type: 'SPOILER_LEAK',
-          severity: 'CRITICAL',
-          chapter: chNum,
-          quoteOrDescription: `Có dấu hiệu hé lộ sớm bí mật: "${secret.description}"`,
-          reason: `Bí mật này bị cấm tiết lộ trước chương ${secret.forbiddenBeforeChapter}.`,
-          repairInstruction: `Ẩn hoặc xóa chi tiết tiết lộ bí mật này, giữ lại sự bí ẩn.`
-        });
-      }
-    }
-
-    // C. Kiểm tra Word Count
-    const wordCount = content.trim().split(/\s+/).length;
-    const minWords = control.pacingRules?.minWordsPerChapter || 1500;
-    if (wordCount < minWords) {
-      violations.push({
-        type: 'WORD_COUNT_DEFICIT',
-        severity: 'WARNING',
-        chapter: chNum,
-        quoteOrDescription: `Chương ${chNum} chỉ đạt ${wordCount} từ (yêu cầu tối thiểu ${minWords} từ).`,
-        reason: 'Độ dài chương quá ngắn làm giảm trải nghiệm độc giả.',
-        repairInstruction: 'Mở rộng miêu tả tâm lý, đối thoại hoặc chi tiết bối cảnh.'
-      });
-    }
-  }
-
-  // 3. DETERMINISTIC PHYSICAL INJURY CONTINUITY
-  const activeInjuries = Object.values(state.characterStates || {}).flatMap(cs =>
-    (cs.injuries || [])
-      .filter(inj => inj.expectedRecoveryChapter > startCh && (inj.severity === 'severe' || inj.severity === 'critical'))
-      .map(inj => ({ name: cs.name, inj }))
-  );
-
-  for (let i = 0; i < chapters.length; i++) {
-    const ch = chapters[i];
-    const chNum = startCh + i;
-    const content = ch.content || '';
-
-    for (const { name, inj } of activeInjuries) {
-      const nameRegex = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-      if (nameRegex.test(content)) {
-        const combatRegex = /(?:xuất toàn lực|nhảy vọt lên|vung kiếm chém mạnh|tung quyền như vũ bão|phi thân tốc biến)/i;
-        if (combatRegex.test(content) && !content.toLowerCase().includes('vết thương') && !content.toLowerCase().includes('đau')) {
-          violations.push({
-            type: 'INJURY_AMNESIA',
-            severity: 'CRITICAL',
-            chapter: chNum,
-            quoteOrDescription: `Nhân vật ${name} chiến đấu cường độ cao mà quên vết thương ${inj.type} ở ${inj.bodyPart}`,
-            reason: `Vết thương ${inj.severity} cần đến chương ${inj.expectedRecoveryChapter} mới hồi phục.`,
-            repairInstruction: `Miêu tả thêm sự cắn răng chịu đau, hạn chế vận động hoặc phải trả giá khi gắng gượng.`
-          });
-        }
-      }
-    }
-  }
-
-  // 4. AI SEMANTIC QA (Nếu có runner)
-  let continuityScore = 95;
-  let pacingScore = 90;
-
-  if (runner) {
-    const qaSys = `Bạn là Semantic Story Integrity Inspector (Story Engine V3).
-Nhiệm vụ: Hậu kiểm toàn diện các chương vừa viết để bảo đảm tính logic, continuity, và pacing.
-
-HÃY TRẢ VỀ STRICT JSON:
-{
-  "pass": true,
-  "continuityScore": 95,
-  "pacingScore": 90,
-  "semanticChecks": {
-    "characterGating": true,
-    "worldFactContinuity": true,
-    "spoilerContainment": true,
-    "pacingIntegrity": true,
-    "characterTraitConsistency": true
-  },
-  "violations": [
-    {
-      "type": "CHARACTER_GATE" | "SPOILER_LEAK" | "PACING_RUSH" | "INJURY_AMNESIA" | "RESOURCE_CONTRADICTION" | "CHARACTER_OOC" | "WORLD_FACT_CONTRADICTION" | "WORD_COUNT_DEFICIT",
-      "severity": "CRITICAL" | "WARNING",
-      "chapter": 1,
-      "quoteOrDescription": "Đoạn văn có vấn đề",
-      "reason": "Lý do vi phạm",
-      "repairInstruction": "Hướng dẫn sửa chữa chi tiết"
-    }
-  ]
-}`;
-
-    const qaPrompt = `[THÔNG TIN ARC & BATCH]
-Hồi: ${currentArc.title} (Chương ${currentArc.startChapter} - ${currentArc.endChapter})
-Chương đang viết: ${startCh} - ${startCh + chapters.length - 1}
-Nhân vật cấm kỵ: ${lockedCharacters.map(l => l.characterName).join(', ') || 'Không có'}
-Spoiler cấm kỵ: ${forbiddenSpoilers.map(s => s.description).join('; ') || 'Không có'}
-
-[NỘI DUNG CÁC CHƯƠNG VỪA VIẾT]
-${chapters.map((c, i) => `=== CHƯƠNG ${startCh + i}: ${c.title} ===\n${c.content}\n`).join('\n\n')}
-
-Thực hiện kiểm tra Semantic QA:`;
-
-    try {
-      const rawQa = await runner(qaPrompt, qaSys);
-      const cleaned = rawQa.replace(/```json/g, '').replace(/```/g, '').trim();
-      const parsed = JSON.parse(cleaned);
-
-      if (parsed) {
-        continuityScore = typeof parsed.continuityScore === 'number' ? parsed.continuityScore : continuityScore;
-        pacingScore = typeof parsed.pacingScore === 'number' ? parsed.pacingScore : pacingScore;
-
-        if (parsed.semanticChecks) {
-          semanticChecks.characterGating = semanticChecks.characterGating && parsed.semanticChecks.characterGating !== false;
-          semanticChecks.worldFactContinuity = parsed.semanticChecks.worldFactContinuity !== false;
-          semanticChecks.spoilerContainment = semanticChecks.spoilerContainment && parsed.semanticChecks.spoilerContainment !== false;
-          semanticChecks.pacingIntegrity = parsed.semanticChecks.pacingIntegrity !== false;
-          semanticChecks.characterTraitConsistency = parsed.semanticChecks.characterTraitConsistency !== false;
-        }
-
-        if (Array.isArray(parsed.violations)) {
-          for (const v of parsed.violations) {
-            violations.push({
-              type: (v.type as ViolationType) || 'CHARACTER_OOC',
-              severity: v.severity === 'CRITICAL' ? 'CRITICAL' : 'WARNING',
-              chapter: v.chapter || startCh,
-              quoteOrDescription: v.quoteOrDescription || '',
-              reason: v.reason || '',
-              repairInstruction: v.repairInstruction || ''
-            });
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('[validateBatchOutput] AI QA call failed or unparseable, using fail-closed deterministic validator:', err);
-    }
-  }
-
-  // Quyết định FAIL-CLOSED
-  const hasCritical = violations.some(v => v.severity === 'CRITICAL');
-  const pass = !hasCritical && violations.filter(v => v.severity === 'WARNING').length <= 2;
-
-  // Tính lại điểm
-  if (hasCritical) {
-    continuityScore = Math.min(continuityScore, 65);
-  }
-
-  return {
-    pass,
-    continuityScore,
-    pacingScore,
-    violations,
-    semanticChecks
-  };
 }

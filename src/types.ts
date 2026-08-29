@@ -1,4 +1,6 @@
 
+import type { AuthoritativeBlueprintV3, ChapterMemory, JsonObject, SanityCheckResult, StoryControl, StoryState, ValidationResult } from './services/storyEngine/types';
+
 export enum FileStatus {
   IDLE = 'IDLE',
   PROCESSING = 'PROCESSING',
@@ -221,6 +223,7 @@ export interface GlobalRepairEntry {
 
 export interface CreativeChapter {
     id: string;
+    chapterNumber?: number;
     title: string;
     content: string;
     status?: 'completed' | 'failed' | 'retrying';
@@ -263,9 +266,9 @@ export interface CreativeSnapshot {
     seriesPremise?: string;
     continuitySummary?: string;
     setup?: any;
-    storyControl?: any;
-    storyState?: any;
-    memoryIndex?: any[];
+    storyControl?: StoryControl;
+    storyState?: StoryState;
+    memoryIndex?: ChapterMemory[];
 }
 
 export interface CreativeState {
@@ -284,10 +287,13 @@ export interface CreativeState {
     snapshots?: CreativeSnapshot[];
     seriesPremise?: string;
     continuitySummary?: string;
-    storyControl?: any;
-    storyState?: any;
-    memoryIndex?: any[];
+    storyControl?: StoryControl;
+    storyState?: StoryState;
+    memoryIndex?: ChapterMemory[];
+    storyEngineSettingsV3?: JsonObject;
+    blueprintV3?: AuthoritativeBlueprintV3;
     safeLongFormMode?: boolean;
-    lastValidationResult?: any;
+    lastValidationResult?: ValidationResult;
+    storyEngineSanity?: SanityCheckResult;
 }
 

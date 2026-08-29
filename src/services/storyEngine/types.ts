@@ -1,5 +1,15 @@
 import { Character } from '../../types';
 
+export const STORY_CONTROL_SCHEMA_VERSION = 3;
+export const STORY_STATE_SCHEMA_VERSION = 2;
+export const MEMORY_SCHEMA_VERSION = 2;
+
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
+export interface JsonObject {
+  [key: string]: JsonValue;
+}
+
 export type PipelineStage = 'compiler' | 'planning' | 'writing' | 'validating' | 'repairing' | 'extracting' | 'completed' | 'failed';
 
 export interface PipelineProgressInfo {
@@ -24,6 +34,8 @@ export interface StoryBible {
   outline: string;
   characters: Character[];
   totalPlannedChapters?: number;
+  storyEngineSettingsV3?: JsonObject;
+  blueprintV3?: AuthoritativeBlueprintV3;
 }
 
 // ----------------------------------------------------
@@ -42,6 +54,7 @@ export interface ArcDefinition {
   keyMilestones: string[];
   worldBuildingFocus: string;
   forbiddenSpoilers: string[];
+  source?: JsonObject;
 }
 
 export interface CharacterUnlockCondition {
@@ -64,22 +77,87 @@ export interface CharacterRegistryEntry {
   unlockCondition: CharacterUnlockCondition;
   allowedArcs: string[];
   deathOrExitChapter?: number;
+  aliases?: string[];
+  relationships?: JsonValue;
+  restrictions: string[];
+  unlockChapter?: number;
+  directAppearanceChapter?: number;
+  povUnlockChapter?: number;
+  majorFocusNotBeforeChapter?: number;
+  source?: JsonObject;
 }
 
 export interface WorldFact {
   id: string;
-  category: 'magic_system' | 'geography' | 'faction' | 'history' | 'secret_rule';
+  category: 'magic_system' | 'geography' | 'faction' | 'history' | 'secret_rule' | string;
   fact: string;
   scope: 'public' | 'restricted' | 'hidden_truth';
+  visibility: 'always' | 'gated' | 'author_only';
   introducedAtChapter: number;
+  unlockChapter?: number;
+  revealChapter?: number;
   gateCondition?: string;
   secretTruth?: string;
+  source?: JsonObject;
 }
 
 export interface NarrativeExposureRules {
   prohibitedTopicsUntilChapter: { topic: string; unlockChapter: number }[];
   foreshadowingDirectives: { hint: string; plantArcId: string; payoffArcId: string }[];
   mandatoryKnowledgeByChapter: { chapter: number; requiredFactIds: string[] }[];
+}
+
+export interface NarrativeExposureRule {
+  id: string;
+  threadId?: string;
+  startChapter: number;
+  endChapter: number;
+  allowedEvidence: string[];
+  forbiddenEvidence: string[];
+  allowedInferences: string[];
+  forbiddenInferences: string[];
+  readerKnowledgeCeiling: string;
+  relatedWorldFactIds: string[];
+  source?: JsonObject;
+}
+
+export interface MysteryStage {
+  id: string;
+  startChapter: number;
+  endChapter: number;
+  allowedKnowledge: string[];
+  allowedEvidence: string[];
+  allowedInferences: string[];
+  readerKnowledgeCeiling?: string;
+  source?: JsonObject;
+}
+
+export interface MysteryThread {
+  id: string;
+  question: string;
+  actualTruth: string;
+  stages: MysteryStage[];
+  source?: JsonObject;
+}
+
+export type OriginalityRules = JsonValue;
+export type StoryEngineSettings = JsonObject;
+export type AuthorOnlySecrets = JsonValue[];
+
+export interface AuthoritativeBlueprintV3 {
+  schemaVersion?: JsonPrimitive;
+  totalChapters?: number;
+  settings?: JsonObject;
+  characterRegistry: CharacterRegistryEntry[];
+  worldFacts: WorldFact[];
+  arcs: ArcDefinition[];
+  narrativeExposureRules: JsonObject[] | NarrativeExposureRules;
+  mysteryThreads: JsonValue[];
+  characterGates: CharacterGate[];
+  spoilerGates: SpoilerGate[];
+  originality?: OriginalityRules;
+  authorOnlySecrets: AuthorOnlySecrets;
+  source: JsonObject;
 }
 
 export interface CharacterGate {
@@ -115,28 +193,37 @@ export interface PacingRules {
 
 export interface StoryControl {
   version: 'v3' | 'v2';
+  schemaVersion: typeof STORY_CONTROL_SCHEMA_VERSION;
   sourceHash: string;
   totalChapters: number;
   arcs: ArcDefinition[];
   characterRegistry: Record<string, CharacterRegistryEntry>;
   worldFacts: WorldFact[];
-  narrativeExposureRules: NarrativeExposureRules;
+  narrativeExposureRules: JsonObject[] | NarrativeExposureRules;
   characterGates: CharacterGate[];
   spoilerGates: SpoilerGate[];
   continuityRules: ContinuityRules;
   pacingRules: PacingRules;
+  settings?: StoryEngineSettings;
+  mysteryThreads: JsonValue[];
+  originality?: OriginalityRules;
+  authorOnlySecrets: AuthorOnlySecrets;
+  authoritativeBlueprint?: AuthoritativeBlueprintV3;
 }
 
 // ----------------------------------------------------
 // 3. STORY STATE (Trạng thái động qua từng chương)
 // ----------------------------------------------------
 export interface CharacterInjury {
+  id?: string;
   type: string;
   bodyPart: string;
   severity: 'mild' | 'moderate' | 'severe' | 'critical';
   receivedChapter: number;
   expectedRecoveryChapter: number;
   restrictions: string[];
+  status?: 'active' | 'improving' | 'worsening' | 'recovered' | 'permanent';
+  resolvedChapter?: number;
 }
 
 export interface CharacterState {
@@ -148,6 +235,39 @@ export interface CharacterState {
   knownFacts: string[];
   goals: string[];
   activeFaction?: string;
+  priorLocation?: string;
+  lastLocationChangeChapter?: number;
+}
+
+export type KnowledgeSource = 'witnessed' | 'told_by' | 'document' | 'inference' | 'rumor' | 'unknown' | string;
+
+export interface KnowledgeEntry {
+  factId: string;
+  fact: string;
+  characterId?: string;
+  learnedChapter: number;
+  source: KnowledgeSource;
+  confidence: number;
+  interpretation?: string;
+  status?: 'believed' | 'questioned' | 'retracted' | 'confirmed';
+}
+
+export interface TimelineMarker {
+  chapter: number;
+  marker: string;
+  relativeChronology?: string;
+  location?: string;
+  previousLocation?: string;
+  event?: string;
+}
+
+export interface StoryConsequence {
+  id: string;
+  type: 'debt' | 'promise' | 'favor' | 'consequence' | string;
+  description: string;
+  createdChapter: number;
+  status: 'active' | 'resolved';
+  resolvedChapter?: number;
 }
 
 export interface StoryRelationship {
@@ -179,6 +299,8 @@ export interface LongTermSeed {
 }
 
 export interface StoryState {
+  schemaVersion?: typeof STORY_STATE_SCHEMA_VERSION;
+  sourceHash?: string;
   currentChapter: number;
   characterStates: Record<string, CharacterState>;
   relationships: StoryRelationship[];
@@ -198,6 +320,10 @@ export interface StoryState {
   unlockedCharacterIds: string[];
   worldFactStates: Record<string, 'hidden' | 'foreshadowed' | 'revealed'>;
   activeFactions?: string[];
+  knowledgeLedger?: KnowledgeEntry[];
+  timeline?: TimelineMarker[];
+  continuitySummary?: string;
+  consequences?: StoryConsequence[];
 }
 
 // ----------------------------------------------------
@@ -205,6 +331,7 @@ export interface StoryState {
 // ----------------------------------------------------
 export interface ChapterPlan {
   chapterNumber: number;
+  arcId?: string;
   title: string;
   focus: string;
   povCharacter: string;
@@ -215,6 +342,20 @@ export interface ChapterPlan {
   worldFactInteractions: string[];
   cluesDiscovered: string[];
   forbiddenSpoilers: string[];
+  primaryGoal?: string;
+  secondaryGoal?: string;
+  plannedCharacters?: string[];
+  plannedWorldFacts?: string[];
+  plannedEvidence?: string[];
+  plannedInferences?: string[];
+  mysteryAdvancement?: string;
+  mysteryStageId?: string;
+  conflict?: string;
+  expectedOutcome?: string;
+  continuityRequirements?: string[];
+  hookType?: string;
+  majorFocusCharacter?: string;
+  arcBeatIds?: string[];
 }
 
 export interface BatchPlan {
@@ -227,35 +368,162 @@ export interface BatchPlan {
   antiDriftMeasures: string[];
   planValid: boolean;
   planValidationErrors?: string[];
+  requestedChapterNumbers?: number[];
+}
+
+export type CharacterAccessLevel = 'LOCKED' | 'MENTION_ONLY' | 'DIRECT_ALLOWED' | 'POV_ALLOWED' | 'MAJOR_FOCUS_ALLOWED';
+
+export interface CharacterAccess {
+  level: CharacterAccessLevel;
+  canMention: boolean;
+  canAppearDirectly: boolean;
+  canUsePov: boolean;
+  canTakeMajorFocus: boolean;
+  unlockChapter: number;
+  directAppearanceChapter: number;
+  povUnlockChapter: number;
+  majorFocusNotBeforeChapter: number;
+}
+
+export interface ExposureProjection {
+  ruleIds: string[];
+  allowedEvidence: string[];
+  forbiddenEvidence: string[];
+  allowedInferences: string[];
+  forbiddenInferences: string[];
+  readerKnowledgeCeilings: string[];
+  relatedWorldFactIds: string[];
+}
+
+export interface StoryEngineSanityInfo {
+  chapter: number;
+  arcId: string;
+  activeCharacterCount: number;
+  lockedCharacterCount: number;
+  activeWorldFacts: string[];
+  lockedWorldFacts: string[];
+  activeExposureRuleIds: string[];
+  mysteryStageIds: string[];
+}
+
+export type StoryModelRole =
+  | 'STORY_CONTROL_COMPILER'
+  | 'PLANNER'
+  | 'PLAN_VALIDATOR_SEMANTIC'
+  | 'WRITER'
+  | 'STATE_EXTRACTOR'
+  | 'MEMORY_COMPACTOR'
+  | 'STORY_VALIDATOR_SEMANTIC'
+  | 'AUTO_REPAIR';
+
+export type StoryModelTier = 'FAST' | 'QUALITY';
+
+export interface StoryModelRoute {
+  role: StoryModelRole;
+  tier: StoryModelTier;
+  requiredInStrictMode: boolean;
+  allowFastFallback: boolean;
+  status: 'available' | 'unavailable' | 'unknown';
+}
+
+export interface SanityCheckResult {
+  schemaVersion: number;
+  sourceHash: string;
+  chapter: number;
+  settingsLoaded: boolean;
+  blueprintLoaded: boolean;
+  arcCount: number;
+  exactArcCoverage: boolean;
+  characterRegistryCount: number;
+  activeCharacterCount: number;
+  lockedCharacterCount: number;
+  worldFactCount: number;
+  activeWorldFactCount: number;
+  lockedWorldFactCount: number;
+  authorOnlyWorldFactCount: number;
+  activeExposureRuleIds: string[];
+  readerKnowledgeCeiling: string[];
+  activeMysteryStageIds: string[];
+  storyStateLoaded: boolean;
+  memoryEntryCount: number;
+  knowledgeEntryCount: number;
+  modelRoutingRoles: StoryModelRoute[];
+  writerContextLeakCheck: boolean;
+  plannerContextLeakCheck: boolean;
+  errors: string[];
+  warnings: string[];
+  pass: boolean;
 }
 
 // ----------------------------------------------------
 // 5. VALIDATION & AUTO-REPAIR
 // ----------------------------------------------------
-export type ViolationType = 
-  | 'CHARACTER_GATE' 
-  | 'SPOILER_LEAK' 
-  | 'PACING_RUSH' 
-  | 'INJURY_AMNESIA' 
-  | 'RESOURCE_CONTRADICTION' 
-  | 'CHARACTER_OOC' 
-  | 'WORLD_FACT_CONTRADICTION' 
-  | 'WORD_COUNT_DEFICIT';
+export const STORY_VIOLATION_TYPES = [
+  'PREMATURE_EVIDENCE',
+  'PREMATURE_INFERENCE',
+  'READER_KNOWLEDGE_OVEREXPOSURE',
+  'WORLD_FACT_GATE_VIOLATION',
+  'MYSTERY_STAGE_VIOLATION',
+  'PREMATURE_MYSTERY_RESOLUTION',
+  'REAL_WORLD_CONTAMINATION',
+  'ANACHRONISM',
+  'CHRONOLOGY_CONTRADICTION',
+  'LOCATION_CANON_CONTRADICTION',
+  'CHARACTER_SKILL_DRIFT',
+  'COMBAT_POWER_VIOLATION',
+  'OPPONENT_COMPETENCE_FAILURE',
+  'KNOWLEDGE_LEAK',
+  'PLAN_VIOLATION',
+  'ORIGINALITY_VIOLATION',
+  'CLICHE_OVERUSE',
+  'OUTPUT_STRUCTURE',
+  'STATE_DELTA_INVALID',
+  'QA_UNAVAILABLE',
+  // Backward-compatible deterministic classes retained from Story Engine V3 Tasks 1/2.
+  'CHARACTER_GATE',
+  'SPOILER_LEAK',
+  'PACING_RUSH',
+  'INJURY_AMNESIA',
+  'RESOURCE_CONTRADICTION',
+  'CHARACTER_OOC',
+  'WORLD_FACT_CONTRADICTION',
+  'WORD_COUNT_DEFICIT'
+] as const;
 
-export interface Violation {
-  type: ViolationType;
-  severity: 'CRITICAL' | 'WARNING';
-  chapter: number;
-  quoteOrDescription: string;
-  reason: string;
-  repairInstruction: string;
+export type StoryViolationType = typeof STORY_VIOLATION_TYPES[number];
+export type ViolationType = StoryViolationType;
+export type StoryViolationSeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
+export interface StoryViolation {
+  type: StoryViolationType;
+  severity: StoryViolationSeverity;
+  message: string;
+  chapterNumber?: number;
+  evidence?: string;
+  relatedRuleId?: string;
+  relatedCharacter?: string;
+  relatedThreadId?: string;
+  suggestedRepair?: string;
+  // Legacy aliases remain readable in saved projects and existing UI integrations.
+  chapter?: number;
+  quoteOrDescription?: string;
+  reason?: string;
+  repairInstruction?: string;
 }
 
-export interface ValidationResult {
+export type Violation = StoryViolation;
+
+export interface StoryValidationResult {
   pass: boolean;
-  continuityScore: number; // 0 - 100
-  pacingScore: number; // 0 - 100
-  violations: Violation[];
+  status: 'PASS' | 'FAIL' | 'QA_UNAVAILABLE';
+  violations: StoryViolation[];
+  warnings?: StoryViolation[];
+  attempts?: number;
+  repairAttempts?: number;
+  modelRole?: 'semantic-validator';
+  // Kept for persisted-project/UI backward compatibility.
+  continuityScore: number;
+  pacingScore: number;
   semanticChecks: {
     characterGating: boolean;
     worldFactContinuity: boolean;
@@ -265,11 +533,18 @@ export interface ValidationResult {
   };
 }
 
+export type ValidationResult = StoryValidationResult;
+
 // ----------------------------------------------------
 // 6. MEMORY & CONTINUITY INDEX
 // ----------------------------------------------------
 export interface ChapterMemory {
   chapterNumber: number;
+  id?: string;
+  schemaVersion?: typeof MEMORY_SCHEMA_VERSION;
+  sourceHash?: string;
+  chapterStart?: number;
+  chapterEnd?: number;
   title: string;
   summary: string;
   charactersInvolved: string[];
@@ -279,4 +554,16 @@ export interface ChapterMemory {
   injuries?: string[];
   resources?: string[];
   longTermSeeds?: string[];
+  arcId?: string;
+  characterIds?: string[];
+  threadIds?: string[];
+  factIds?: string[];
+  seedIds?: string[];
+  injuryIds?: string[];
+  relationshipIds?: string[];
+  consequenceIds?: string[];
+  importance?: number;
+  resolved?: boolean;
+  irreversible?: boolean;
+  order?: number;
 }

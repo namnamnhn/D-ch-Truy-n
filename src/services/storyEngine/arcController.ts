@@ -1,35 +1,14 @@
 import { Character } from '../../types';
 import { StoryControl, ArcDefinition, CharacterGate, SpoilerGate } from './types';
+import { getArcForChapter } from './storyAccess';
+
+export { getArcForChapter } from './storyAccess';
 
 /**
  * Tìm Arc hiện tại dựa trên số chương tiếp theo cần viết.
  */
 export function getCurrentArc(control: StoryControl, nextChapter: number): ArcDefinition {
-  if (!control.arcs || control.arcs.length === 0) {
-    const total = control.totalChapters || 600;
-    return {
-      id: 'arc_1',
-      title: `Giai đoạn khởi đầu (Chương 1-${total})`,
-      startChapter: 1,
-      endChapter: total,
-      theme: 'Khởi đầu và trưởng thành',
-      coreConflict: 'Vượt qua thử thách ban đầu',
-      climaxChapter: Math.max(1, total - 2),
-      pacing: 'accelerating',
-      unlockedCharacterIds: [],
-      keyMilestones: ['Khởi đầu', 'Đột phá', 'Kết thúc'],
-      worldBuildingFocus: 'Thiết lập thế giới',
-      forbiddenSpoilers: []
-    };
-  }
-
-  const found = control.arcs.find(a => nextChapter >= a.startChapter && nextChapter <= a.endChapter);
-  if (found) return found;
-
-  if (nextChapter < control.arcs[0].startChapter) {
-    return control.arcs[0];
-  }
-  return control.arcs[control.arcs.length - 1];
+  return getArcForChapter(control, nextChapter);
 }
 
 /**

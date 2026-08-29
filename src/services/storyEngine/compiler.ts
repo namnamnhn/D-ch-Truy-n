@@ -1,13 +1,46 @@
 import { Character } from '../../types';
-import { StoryBible, StoryControl, StoryState, ArcDefinition, CharacterGate, SpoilerGate, CharacterRegistryEntry, WorldFact, NarrativeExposureRules } from './types';
+import { StoryBible, StoryControl, StoryState, ArcDefinition, CharacterGate, SpoilerGate, CharacterRegistryEntry, WorldFact, NarrativeExposureRules, STORY_CONTROL_SCHEMA_VERSION, STORY_STATE_SCHEMA_VERSION } from './types';
 import { getCurrentArc, calculateArcProgress } from './arcController';
+import { createStoryControlFromBlueprint, parseBlueprintContent, validateBlueprintV3Object } from './blueprintParser';
+import { isRecord } from './runtimeValidation';
+import { getCharacterAccess, isWorldFactAvailable } from './storyAccess';
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalize(value[key])]));
+}
+
+export function stableStringify(value: unknown): string {
+  return JSON.stringify(canonicalize(value));
+}
 
 /**
  * Tính hash xác thực để kiểm tra xem Bible có thay đổi không
  */
 export function computeBibleHash(bible: StoryBible): string {
-  const charNames = (bible.characters || []).map(c => c.name).sort().join(',');
-  const source = `${bible.seedTitle}|${bible.genre}|${bible.seriesPremise}|${bible.worldNotes}|${bible.outline}|${charNames}|${bible.totalPlannedChapters || 600}`;
+  const source = stableStringify({
+    storyControlSchemaVersion: STORY_CONTROL_SCHEMA_VERSION,
+    seedTitle: bible.seedTitle,
+    genre: bible.genre,
+    seriesPremise: bible.seriesPremise,
+    // continuitySummary is derived runtime state and must not invalidate its own authoritative source hash.
+    worldNotes: bible.worldNotes,
+    charNotes: bible.charNotes,
+    outline: bible.outline,
+    characters: (bible.characters || []).map(character => ({
+      id: character.id,
+      name: character.name,
+      gender: character.gender,
+      age: character.age,
+      role: character.role,
+      appearance: character.appearance,
+      personality: character.personality
+    })),
+    totalPlannedChapters: bible.totalPlannedChapters || 600,
+    storyEngineSettingsV3: bible.storyEngineSettingsV3,
+    blueprintV3: bible.blueprintV3
+  });
   let hash = 0;
   for (let i = 0; i < source.length; i++) {
     const char = source.charCodeAt(i);
@@ -21,104 +54,14 @@ export function computeBibleHash(bible: StoryBible): string {
  * Trích xuất và chuẩn hóa Blueprint V3 nếu được cung cấp trực tiếp
  */
 export function parseBlueprintV3(rawContent: string): StoryControl | null {
-  try {
-    if (!rawContent || !rawContent.trim()) return null;
-    
-    // Nếu là file JSON thuần
-    if (rawContent.trim().startsWith('{') && rawContent.trim().endsWith('}')) {
-      const parsed = JSON.parse(rawContent);
-      if (parsed.arcs && parsed.arcs.length > 0) {
-        return ensureStoryControlV3Defaults(parsed);
-      }
-    }
-
-    // Nếu là file có block [STORY_ENGINE_SETTINGS_V3] hoặc [BLUEPRINT_V3]
-    const match = rawContent.match(/\[(?:STORY_ENGINE_SETTINGS_V3|BLUEPRINT_V3)\]\s*\n([\s\S]*?)(?=\n\[[A-Z0-9_]+\]|$)/i);
-    if (match && match[1]) {
-      const jsonStr = match[1].replace(/```json/g, '').replace(/```/g, '').trim();
-      const parsed = JSON.parse(jsonStr);
-      if (parsed.arcs && parsed.arcs.length > 0) {
-        return ensureStoryControlV3Defaults(parsed);
-      }
-    }
-  } catch (err) {
-    console.warn('[parseBlueprintV3] Failed to parse custom blueprint JSON:', err);
-  }
-  return null;
+  return parseBlueprintContent(rawContent);
 }
 
 /**
  * Đảm bảo các trường mặc định cho StoryControl V3
  */
-function ensureStoryControlV3Defaults(parsed: any): StoryControl {
-  const arcs: ArcDefinition[] = Array.isArray(parsed.arcs) ? parsed.arcs.map((a: any, idx: number) => ({
-    id: a.id || `arc_${idx + 1}`,
-    title: a.title || `Hồi ${idx + 1}`,
-    startChapter: Number(a.startChapter) || (idx * 15 + 1),
-    endChapter: Number(a.endChapter) || ((idx + 1) * 15),
-    theme: a.theme || 'Trưởng thành & Khám phá',
-    coreConflict: a.coreConflict || 'Đối đầu thử thách',
-    climaxChapter: Number(a.climaxChapter) || ((idx + 1) * 15 - 2),
-    pacing: a.pacing || 'accelerating',
-    unlockedCharacterIds: Array.isArray(a.unlockedCharacterIds) ? a.unlockedCharacterIds : [],
-    keyMilestones: Array.isArray(a.keyMilestones) ? a.keyMilestones : [],
-    worldBuildingFocus: a.worldBuildingFocus || 'Mở rộng thế giới',
-    forbiddenSpoilers: Array.isArray(a.forbiddenSpoilers) ? a.forbiddenSpoilers : []
-  })) : [];
-
-  const characterRegistry: Record<string, CharacterRegistryEntry> = {};
-  if (parsed.characterRegistry && typeof parsed.characterRegistry === 'object') {
-    for (const key of Object.keys(parsed.characterRegistry)) {
-      const char = parsed.characterRegistry[key];
-      characterRegistry[key] = {
-        id: char.id || key,
-        name: char.name || key,
-        aliasSet: Array.isArray(char.aliasSet) ? char.aliasSet : [char.name || key],
-        role: char.role || 'Nhân vật',
-        gender: char.gender || 'Chưa rõ',
-        age: char.age || 'Chưa rõ',
-        initialFaction: char.initialFaction || 'Tự do',
-        appearance: char.appearance || '',
-        personality: char.personality || '',
-        coreMotivation: char.coreMotivation || '',
-        forbiddenSpoilers: Array.isArray(char.forbiddenSpoilers) ? char.forbiddenSpoilers : [],
-        unlockCondition: char.unlockCondition || { type: 'arc', value: 'arc_1' },
-        allowedArcs: Array.isArray(char.allowedArcs) ? char.allowedArcs : arcs.map(a => a.id),
-        deathOrExitChapter: char.deathOrExitChapter
-      };
-    }
-  }
-
-  const worldFacts: WorldFact[] = Array.isArray(parsed.worldFacts) ? parsed.worldFacts : [];
-  const narrativeExposureRules: NarrativeExposureRules = parsed.narrativeExposureRules || {
-    prohibitedTopicsUntilChapter: [],
-    foreshadowingDirectives: [],
-    mandatoryKnowledgeByChapter: []
-  };
-
-  return {
-    version: 'v3',
-    sourceHash: parsed.sourceHash || `custom_${Date.now()}`,
-    totalChapters: Number(parsed.totalChapters) || (arcs.length > 0 ? arcs[arcs.length - 1].endChapter : 600),
-    arcs,
-    characterRegistry,
-    worldFacts,
-    narrativeExposureRules,
-    characterGates: Array.isArray(parsed.characterGates) ? parsed.characterGates : [],
-    spoilerGates: Array.isArray(parsed.spoilerGates) ? parsed.spoilerGates : [],
-    continuityRules: {
-      enforcePhysicalInjuryDuration: parsed.continuityRules?.enforcePhysicalInjuryDuration ?? true,
-      enforceResourceTracking: parsed.continuityRules?.enforceResourceTracking ?? true,
-      enforceRelationshipMemory: parsed.continuityRules?.enforceRelationshipMemory ?? true,
-      enforceClueDiscoveryProgression: parsed.continuityRules?.enforceClueDiscoveryProgression ?? true,
-    },
-    pacingRules: {
-      minWordsPerChapter: Number(parsed.pacingRules?.minWordsPerChapter) || 2000,
-      maxWordsPerChapter: Number(parsed.pacingRules?.maxWordsPerChapter) || 3500,
-      climaxPacingMultiplier: Number(parsed.pacingRules?.climaxPacingMultiplier) || 1.3,
-      cooldownChaptersAfterClimax: Number(parsed.pacingRules?.cooldownChaptersAfterClimax) || 2
-    }
-  };
+function ensureStoryControlV3Defaults(parsed: unknown): StoryControl {
+  return createStoryControlFromBlueprint(validateBlueprintV3Object(parsed));
 }
 
 /**
@@ -131,6 +74,11 @@ export async function compileStoryControl(
 ): Promise<StoryControl> {
   const hash = computeBibleHash(bible);
   const totalChapters = bible.totalPlannedChapters || 600;
+
+  // Blueprint imported from the dedicated V3 block is authoritative.
+  if (bible.blueprintV3) {
+    return createStoryControlFromBlueprint(bible.blueprintV3, hash, bible.storyEngineSettingsV3);
+  }
 
   // 1. Kiểm tra xem có Blueprint V3 sẵn trong outline / notes không
   const customBlueprint = parseBlueprintV3(bible.outline) || parseBlueprintV3(bible.worldNotes);
@@ -231,9 +179,10 @@ HÃY TRẢ VỀ DUY NHẤT 1 JSON VỚI ĐỊNH DẠNG SAU (Không thêm text ma
     try {
       const rawRes = await runner(prompt);
       const cleaned = rawRes.replace(/```json/g, '').replace(/```/g, '').trim();
-      const parsed = JSON.parse(cleaned);
-      parsed.sourceHash = hash;
-      return ensureStoryControlV3Defaults(parsed);
+      const parsed: unknown = JSON.parse(cleaned);
+      const control = ensureStoryControlV3Defaults(parsed);
+      control.sourceHash = hash;
+      return control;
     } catch (e) {
       console.warn('[StoryEngineCompiler] AI generation failed, falling back to deterministic compiler:', e);
     }
@@ -275,6 +224,7 @@ export function createDeterministicStoryControl(bible: StoryBible, sourceHash: s
       personality: c.personality || '',
       coreMotivation: idx === 0 ? 'Vươn lên đỉnh cao và khám phá thế giới' : 'Đồng hành hoặc thử thách nhân vật chính',
       forbiddenSpoilers: [`Bí mật tương lai về ${c.name}`],
+      restrictions: [],
       unlockCondition: { type: 'arc', value: unlockArcId },
       allowedArcs: Array.from({ length: totalArcsCount - unlockArcIndex }, (_, i) => `arc_${unlockArcIndex + 1 + i}`)
     };
@@ -295,14 +245,14 @@ export function createDeterministicStoryControl(bible: StoryBible, sourceHash: s
   const arcThemes = [
     { title: 'Khởi Đầu & Thức Tỉnh', theme: 'Bắt đầu cuộc hành trình và phát hiện tiềm năng bản thân', conflict: 'Thích nghi hoàn cảnh và vượt qua áp chế sơ khởi' },
     { title: 'Thử Thách Sơ Cấp', theme: 'Khẳng định thực lực trong phạm vi ban đầu', conflict: 'Cạnh tranh nội bộ thế lực' },
-    { title: 'Bí Cảnh & Duyên Ngộ', theme: 'Khám phá di tích cổ xưa, thu thập cơ duyên', conflict: 'Đối đầu các thế lực đối địch săn tìm báu vật' },
-    { title: 'Xung Đột Mở Rộng', theme: 'Thế giới mở rộng, bước chân ra ngoài khu vực quen thuộc', conflict: 'Mâu thuẫn giữa các tông môn / phe phái lớn' },
+    { title: 'Dấu Vết & Khám Phá', theme: 'Khám phá địa điểm, bằng chứng và cơ hội mới', conflict: 'Các lợi ích đối lập cùng tranh giành một mục tiêu' },
+    { title: 'Xung Đột Mở Rộng', theme: 'Bối cảnh mở rộng ra ngoài khu vực quen thuộc', conflict: 'Mâu thuẫn giữa các nhóm và lợi ích lớn' },
     { title: 'Đột Phá & Biến Cố', theme: 'Bước ngoặt lớn thay đổi cục diện cuộc đời', conflict: 'Bị truy đuổi hoặc đối mặt với thảm họa bất ngờ' },
-    { title: 'Tích Lũy Sức Mạnh', theme: 'Ẩn nhẫn tu luyện, thành lập thế lực riêng', conflict: 'Thu phục nhân tài và xây dựng căn cơ' },
+    { title: 'Tích Lũy Năng Lực', theme: 'Rèn luyện, chuẩn bị và xây dựng mạng lưới hỗ trợ', conflict: 'Tập hợp đồng minh và tạo nền tảng hành động' },
     { title: 'Phản Kích & Khẳng Định', theme: 'Trở lại quét sạch kẻ thù cũ, lập lại trật tự', conflict: 'Đại chiến thanh trừng ân oán' },
-    { title: 'Bí Mật Thiên Địa', theme: 'Tiếp cận chân tướng của thế giới và lịch sử cổ đại', conflict: 'Chống lại các thế lực ngầm thao túng vận mệnh' },
-    { title: 'Đại Họa Giáng Lâm', theme: 'Hiểm họa toàn cầu / tam giới bùng nổ', conflict: 'Tập hợp đồng minh ngăn chặn sự diệt vong' },
-    { title: 'Đỉnh Cao Phong Ma', theme: 'Trận chiến quyết định vận mệnh thế giới', conflict: 'Đối đầu trực diện với thế lực tột cùng' }
+    { title: 'Bí Mật Nền Tảng', theme: 'Tiếp cận sự thật về bối cảnh và lịch sử quan trọng', conflict: 'Chống lại những lực lượng ngầm thao túng tình thế' },
+    { title: 'Khủng Hoảng Lan Rộng', theme: 'Hiểm họa vượt khỏi phạm vi xung đột ban đầu', conflict: 'Tập hợp đồng minh để ngăn hậu quả không thể đảo ngược' },
+    { title: 'Quyết Định Cuối', theme: 'Cuộc đối đầu quyết định kết cục của hành trình', conflict: 'Đối diện trực tiếp với lực lượng đối kháng chính' }
   ];
 
   for (let i = 0; i < totalArcsCount; i++) {
@@ -362,34 +312,37 @@ export function createDeterministicStoryControl(bible: StoryBible, sourceHash: s
   // Khởi tạo World Facts từ Bible
   const worldFacts: WorldFact[] = [
     {
-      id: 'fact_magic_rules',
-      category: 'magic_system',
-      fact: bible.worldNotes || 'Hệ thống tu luyện theo từng cảnh giới nghiêm ngặt.',
+      id: 'fact_world_rules',
+      category: 'world_rules',
+      fact: bible.worldNotes || `Các quy tắc của bối cảnh ${bible.genre || 'đã chọn'} phải nhất quán với tiền đề.`,
       scope: 'public',
+      visibility: 'always',
       introducedAtChapter: 1
     },
     {
       id: 'fact_world_geography',
       category: 'geography',
-      fact: 'Bối cảnh thế giới phân tầng từ hạ giới lên thượng giới.',
+      fact: 'Địa lý, khoảng cách và các khu vực quan trọng tuân theo mô tả thế giới của tác giả.',
       scope: 'public',
+      visibility: 'always',
       introducedAtChapter: 1
     }
   ];
 
   const narrativeExposureRules: NarrativeExposureRules = {
     prohibitedTopicsUntilChapter: [
-      { topic: 'Bí mật tối thượng về nguồn gốc đại lục', unlockChapter: Math.floor(totalChapters * 0.6) },
-      { topic: 'Sự thật về các vị thần cổ đại', unlockChapter: Math.floor(totalChapters * 0.75) }
+      { topic: 'Bí mật về nguồn gốc xung đột trung tâm', unlockChapter: Math.floor(totalChapters * 0.6) },
+      { topic: 'Sự thật về biến cố nền tảng trong lịch sử', unlockChapter: Math.floor(totalChapters * 0.75) }
     ],
     foreshadowingDirectives: [
-      { hint: 'Gợi ý nhẹ nhàng về sự mất cân bằng linh khí', plantArcId: 'arc_1', payoffArcId: 'arc_3' }
+      { hint: 'Gợi ý nhẹ nhàng về một bất thường chưa được giải thích', plantArcId: 'arc_1', payoffArcId: 'arc_3' }
     ],
     mandatoryKnowledgeByChapter: []
   };
 
   return {
     version: 'v3',
+    schemaVersion: STORY_CONTROL_SCHEMA_VERSION,
     sourceHash,
     totalChapters,
     arcs,
@@ -409,7 +362,9 @@ export function createDeterministicStoryControl(bible: StoryBible, sourceHash: s
       maxWordsPerChapter: 3500,
       climaxPacingMultiplier: 1.3,
       cooldownChaptersAfterClimax: 2
-    }
+    },
+    mysteryThreads: [],
+    authorOnlySecrets: []
   };
 }
 
@@ -426,18 +381,22 @@ export function createInitialStoryState(
 
   // Xác định danh sách nhân vật mở khóa theo gates
   const unlockedCharacterIds = new Set<string>();
-  (control.characterGates || []).forEach(gate => {
-    if (gate.unlockAtChapter <= Math.max(1, currentChapter)) {
-      unlockedCharacterIds.add(gate.characterId);
+  Object.values(control.characterRegistry || {}).forEach(character => {
+    if (getCharacterAccess(control, character, Math.max(1, currentChapter)).canMention) {
+      unlockedCharacterIds.add(character.id);
     }
   });
-  (currentArc.unlockedCharacterIds || []).forEach(id => unlockedCharacterIds.add(id));
-  initialCharacters.forEach(c => unlockedCharacterIds.add(c.id));
+  initialCharacters.forEach(character => {
+    if (!control.characterRegistry?.[character.id]
+      && !(control.characterGates || []).some(gate => gate.characterId === character.id && gate.unlockAtChapter > Math.max(1, currentChapter))) {
+      unlockedCharacterIds.add(character.id);
+    }
+  });
 
   // Trạng thái World Facts ban đầu
   const worldFactStates: Record<string, 'hidden' | 'foreshadowed' | 'revealed'> = {};
   (control.worldFacts || []).forEach(wf => {
-    if (wf.introducedAtChapter <= Math.max(1, currentChapter)) {
+    if (isWorldFactAvailable(wf, Math.max(1, currentChapter))) {
       worldFactStates[wf.id] = 'revealed';
     } else {
       worldFactStates[wf.id] = 'hidden';
@@ -445,6 +404,8 @@ export function createInitialStoryState(
   });
 
   return {
+    schemaVersion: STORY_STATE_SCHEMA_VERSION,
+    sourceHash: control.sourceHash,
     currentChapter,
     characterStates: {},
     relationships: [],
@@ -457,6 +418,10 @@ export function createInitialStoryState(
     currentArcProgress: arcProgress,
     unlockedCharacterIds: Array.from(unlockedCharacterIds),
     worldFactStates,
-    activeFactions: []
+    activeFactions: [],
+    knowledgeLedger: [],
+    timeline: [],
+    continuitySummary: '',
+    consequences: []
   };
 }

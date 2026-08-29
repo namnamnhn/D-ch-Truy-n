@@ -1,15 +1,144 @@
 import { CreativeChapter } from '../../types';
-import { StoryBible, StoryControl, StoryState, BatchPlan, ChapterPlan, ChapterMemory } from './types';
+import { BatchPlan, ChapterMemory, ChapterPlan, StoryBible, StoryControl, StoryState } from './types';
 import { buildPlannerContext } from './contextBuilder';
-import { getCurrentArc } from './arcController';
-import { validateAndRepairBatchPlan } from './planValidator';
+import { parseJsonObject, normalizePositiveInteger, normalizeStringArray, normalizeText } from './runtimeValidation';
+import { validateBatchPlan, validateBatchPlanSemantically } from './planValidator';
+import { getArcForChapter, getCharacterAccess } from './storyAccess';
 
-/**
- * Batch Planner V3:
- * Tạo Kế hoạch chi tiết từng chương cho Batch.
- * Sau khi AI Flash tạo kế hoạch, lập tức chạy qua `validateAndRepairBatchPlan`
- * để đảm bảo 100% không rò rỉ nhân vật bị khóa hoặc spoiler.
- */
+export const MAX_PLAN_ATTEMPTS = 3;
+
+export class PlanGenerationError extends Error {
+  readonly violations: string[];
+  constructor(violations: string[]) {
+    super(`Plan không đạt sau ${MAX_PLAN_ATTEMPTS} lần thử: ${violations.join('; ')}`);
+    this.name = 'PlanGenerationError';
+    this.violations = violations;
+  }
+}
+
+function normalizePacing(value: unknown): ChapterPlan['pacingTarget'] {
+  return value === 'slow_build' || value === 'rising_action' || value === 'climax'
+    || value === 'cliffhanger' || value === 'cool_down' ? value : 'rising_action';
+}
+
+function normalizeChapterPlan(value: unknown, fallbackChapter: number, control: StoryControl): ChapterPlan {
+  const object = typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+  const chapterNumber = normalizePositiveInteger(object.chapterNumber);
+  if (chapterNumber === null) throw new Error(`ChapterPlan vị trí ${fallbackChapter} thiếu chapterNumber hợp lệ.`);
+  const arcId = normalizeText(object.arcId);
+  if (!arcId) throw new Error(`ChapterPlan Chương ${chapterNumber} thiếu arcId.`);
+  const focus = normalizeText(object.focus) || normalizeText(object.primaryGoal) || 'Phát triển cốt truyện trong Arc hiện tại';
+  const povCharacter = normalizeText(object.povCharacter) || '';
+  return {
+    chapterNumber,
+    arcId,
+    title: normalizeText(object.title) || `Chương ${chapterNumber}`,
+    focus,
+    primaryGoal: normalizeText(object.primaryGoal) || focus,
+    secondaryGoal: normalizeText(object.secondaryGoal) || undefined,
+    povCharacter,
+    pacingTarget: normalizePacing(object.pacingTarget),
+    requiredEvents: normalizeStringArray(object.requiredEvents),
+    introducedCharacters: normalizeStringArray(object.introducedCharacters),
+    activeCharacters: normalizeStringArray(object.activeCharacters),
+    worldFactInteractions: normalizeStringArray(object.worldFactInteractions),
+    cluesDiscovered: normalizeStringArray(object.cluesDiscovered),
+    forbiddenSpoilers: [],
+    plannedCharacters: normalizeStringArray(object.plannedCharacters).length
+      ? normalizeStringArray(object.plannedCharacters) : normalizeStringArray(object.activeCharacters),
+    plannedWorldFacts: normalizeStringArray(object.plannedWorldFacts).length
+      ? normalizeStringArray(object.plannedWorldFacts) : normalizeStringArray(object.worldFactInteractions),
+    plannedEvidence: normalizeStringArray(object.plannedEvidence),
+    plannedInferences: normalizeStringArray(object.plannedInferences),
+    mysteryAdvancement: normalizeText(object.mysteryAdvancement) || undefined,
+    mysteryStageId: normalizeText(object.mysteryStageId) || undefined,
+    conflict: normalizeText(object.conflict) || undefined,
+    expectedOutcome: normalizeText(object.expectedOutcome) || undefined,
+    continuityRequirements: normalizeStringArray(object.continuityRequirements),
+    hookType: normalizeText(object.hookType) || undefined,
+    majorFocusCharacter: normalizeText(object.majorFocusCharacter) || undefined,
+    arcBeatIds: normalizeStringArray(object.arcBeatIds)
+  };
+}
+
+export function normalizeBatchPlan(
+  raw: string,
+  control: StoryControl,
+  requestedChapterNumbers: number[]
+): BatchPlan {
+  const parsed = parseJsonObject(raw, 'Planner output');
+  if (!Array.isArray(parsed.chapters)) throw new Error('Planner output: chapters phải là array.');
+  const chapters = parsed.chapters.map((chapter, index) =>
+    normalizeChapterPlan(chapter, requestedChapterNumbers[index] ?? requestedChapterNumbers[0], control));
+  const arcs = requestedChapterNumbers.map(chapter => getArcForChapter(control, chapter));
+  return {
+    arcId: arcs.every(arc => arc.id === arcs[0].id) ? arcs[0].id : `multi:${Array.from(new Set(arcs.map(arc => arc.id))).join(',')}`,
+    startChapter: requestedChapterNumbers[0],
+    endChapter: requestedChapterNumbers[requestedChapterNumbers.length - 1],
+    requestedChapterNumbers: [...requestedChapterNumbers],
+    chapters,
+    batchDirectives: normalizeStringArray(parsed.batchDirectives),
+    charactersGated: [],
+    antiDriftMeasures: normalizeStringArray(parsed.antiDriftMeasures),
+    planValid: true
+  };
+}
+
+function deterministicPacing(control: StoryControl, chapter: number): ChapterPlan['pacingTarget'] {
+  const arc = getArcForChapter(control, chapter);
+  if (chapter === arc.climaxChapter) return 'climax';
+  if (chapter > arc.climaxChapter) return 'cool_down';
+  if (arc.pacing === 'slow_burn') return 'slow_build';
+  return 'rising_action';
+}
+
+export function createDeterministicBatchPlan(
+  _bible: StoryBible,
+  control: StoryControl,
+  requestedChapterNumbers: number[]
+): BatchPlan {
+  const chapters = requestedChapterNumbers.map(chapterNumber => {
+    const arc = getArcForChapter(control, chapterNumber);
+    const available = Object.values(control.characterRegistry || {}).filter(character =>
+      getCharacterAccess(control, character, chapterNumber).canAppearDirectly);
+    const pov = available.find(character => getCharacterAccess(control, character, chapterNumber).canUsePov);
+    return {
+      chapterNumber,
+      arcId: arc.id,
+      title: `Chương ${chapterNumber}: Tiến trình ${arc.title}`,
+      focus: `Phát triển xung đột giai đoạn ${arc.title}`,
+      primaryGoal: `Tiến triển mục tiêu của ${arc.id} tại Chương ${chapterNumber}`,
+      povCharacter: pov?.name || '',
+      pacingTarget: deterministicPacing(control, chapterNumber),
+      requiredEvents: [],
+      introducedCharacters: [],
+      activeCharacters: pov ? [pov.name] : [],
+      worldFactInteractions: [],
+      cluesDiscovered: [],
+      forbiddenSpoilers: [],
+      plannedCharacters: pov ? [pov.name] : [],
+      plannedWorldFacts: [],
+      plannedEvidence: [],
+      plannedInferences: [],
+      continuityRequirements: [],
+      arcBeatIds: []
+    } satisfies ChapterPlan;
+  });
+  const arcIds = Array.from(new Set(chapters.map(chapter => chapter.arcId || '')));
+  return {
+    arcId: arcIds.length === 1 ? arcIds[0] : `multi:${arcIds.join(',')}`,
+    startChapter: requestedChapterNumbers[0],
+    endChapter: requestedChapterNumbers[requestedChapterNumbers.length - 1],
+    requestedChapterNumbers: [...requestedChapterNumbers],
+    chapters,
+    batchDirectives: ['Tuân thủ đúng projection theo từng chương'],
+    charactersGated: [],
+    antiDriftMeasures: ['Không dùng beat ngoài Arc của từng chương'],
+    planValid: true
+  };
+}
+
 export async function generateBatchPlan(
   bible: StoryBible,
   control: StoryControl,
@@ -18,128 +147,34 @@ export async function generateBatchPlan(
   nextChapter: number,
   batchSize: number,
   recentChapters: CreativeChapter[],
-  runner: (prompt: string, sys: string) => Promise<string>
+  runner: (prompt: string, sys: string) => Promise<string>,
+  semanticRunner?: (prompt: string, sys: string) => Promise<string>
 ): Promise<BatchPlan> {
-  const currentArc = getCurrentArc(control, nextChapter);
+  const requestedChapterNumbers = Array.from({ length: batchSize }, (_, index) => nextChapter + index);
   const context = buildPlannerContext(bible, control, state, memoryIndex, nextChapter, batchSize, recentChapters);
+  let feedback: string[] = [];
 
-  const sys = `Bạn là BATCH PLANNER chuyên nghiệp cho hệ thống tiểu thuyết dài tập (Story Engine V3).
-Nhiệm vụ: Lập kế hoạch vi mô cho ${batchSize} chương tiếp theo (từ Chương ${nextChapter} đến Chương ${nextChapter + batchSize - 1}).
-
-QUY TẮC BẮT BUỘC:
-1. Mỗi chương phải có trọng tâm rõ ràng (focus), không nhồi nhét quá nhiều xung đột.
-2. TUYỆT ĐỐI KHÔNG đưa nhân vật đang bị khóa (gated) vào activeCharacters hoặc introducedCharacters.
-3. TUYỆT ĐỐI KHÔNG tiết lộ các bí mật nằm trong danh sách cấm kỵ.
-4. PacingTarget phải là 1 trong: "slow_build", "rising_action", "climax", "cliffhanger", "cool_down".
-5. Trả về DUY NHẤT một JSON hợp lệ, không có code markdown phụ:
-{
-  "arcId": "${currentArc.id}",
-  "startChapter": ${nextChapter},
-  "endChapter": ${nextChapter + batchSize - 1},
-  "batchDirectives": ["Chỉ thị 1 cho toàn batch", "Chỉ thị 2"],
-  "antiDriftMeasures": ["Biện pháp chống chệch hướng"],
-  "chapters": [
-    {
-      "chapterNumber": ${nextChapter},
-      "title": "Tiêu đề chương",
-      "focus": "Trọng tâm chính của chương",
-      "povCharacter": "Tên nhân vật góc nhìn",
-      "pacingTarget": "rising_action",
-      "requiredEvents": ["Sự kiện 1", "Sự kiện 2"],
-      "introducedCharacters": [],
-      "activeCharacters": ["Tên các nhân vật tham gia"],
-      "worldFactInteractions": ["Tương tác với hệ thống tu luyện/bối cảnh"],
-      "cluesDiscovered": [],
-      "forbiddenSpoilers": []
+  for (let attempt = 1; attempt <= MAX_PLAN_ATTEMPTS; attempt++) {
+    const sys = `Bạn là Story Engine V3 Chapter Planner. Lập đúng một ChapterPlan cho mỗi chương: [${requestedChapterNumbers.join(', ')}].
+Mỗi ChapterPlan phải có chapterNumber, arcId, primaryGoal, povCharacter, plannedCharacters, plannedWorldFacts,
+plannedEvidence, plannedInferences, continuityRequirements và pacingTarget. Không tự đổi số chương.
+Trả duy nhất JSON object có trường chapters. Không dùng markdown.${feedback.length
+  ? `\nPlan trước bị reject. Sửa toàn bộ violation sau:\n${feedback.join('\n')}` : ''}`;
+    try {
+      const raw = await runner(context, sys);
+      const candidate = normalizeBatchPlan(raw, control, requestedChapterNumbers);
+      const validation = validateBatchPlan(candidate, control, state, requestedChapterNumbers);
+      if (validation.valid) {
+        if (!semanticRunner) return validation.repairedPlan;
+        const semantic = await validateBatchPlanSemantically(validation.repairedPlan, control, state, semanticRunner);
+        if (semantic.valid) return validation.repairedPlan;
+        feedback = [semantic.error || 'SEMANTIC_PLAN_REJECTED'];
+        continue;
+      }
+      feedback = validation.errors;
+    } catch (error) {
+      feedback = [error instanceof Error ? error.message : String(error)];
     }
-  ]
-}`;
-
-  let candidatePlan: BatchPlan;
-
-  try {
-    const rawResult = await runner(context, sys);
-    const cleaned = rawResult.replace(/```json/g, '').replace(/```/g, '').trim();
-    const parsed = JSON.parse(cleaned);
-
-    if (parsed && Array.isArray(parsed.chapters) && parsed.chapters.length > 0) {
-      candidatePlan = {
-        arcId: currentArc.id,
-        startChapter: nextChapter,
-        endChapter: nextChapter + batchSize - 1,
-        batchDirectives: Array.isArray(parsed.batchDirectives) ? parsed.batchDirectives : ['Bám sát Arc hiện tại'],
-        charactersGated: [],
-        antiDriftMeasures: Array.isArray(parsed.antiDriftMeasures) ? parsed.antiDriftMeasures : ['Không giải quyết xung đột sớm'],
-        planValid: true,
-        chapters: parsed.chapters.map((ch: any, idx: number) => ({
-          chapterNumber: nextChapter + idx,
-          title: ch.title || `Chương ${nextChapter + idx}`,
-          focus: ch.focus || 'Phát triển cốt truyện',
-          povCharacter: ch.povCharacter || (bible.characters?.[0]?.name || 'Nhân vật chính'),
-          pacingTarget: ch.pacingTarget || 'rising_action',
-          requiredEvents: Array.isArray(ch.requiredEvents) ? ch.requiredEvents : ['Diễn biến theo mạch'],
-          introducedCharacters: Array.isArray(ch.introducedCharacters) ? ch.introducedCharacters : [],
-          activeCharacters: Array.isArray(ch.activeCharacters) ? ch.activeCharacters : [(bible.characters?.[0]?.name || 'Nhân vật chính')],
-          worldFactInteractions: Array.isArray(ch.worldFactInteractions) ? ch.worldFactInteractions : [],
-          cluesDiscovered: Array.isArray(ch.cluesDiscovered) ? ch.cluesDiscovered : [],
-          forbiddenSpoilers: Array.isArray(ch.forbiddenSpoilers) ? ch.forbiddenSpoilers : []
-        }))
-      };
-    } else {
-      throw new Error('Parsed plan has no valid chapters');
-    }
-  } catch (err) {
-    console.warn('[generateBatchPlan] AI Planner failed or invalid output, generating deterministic plan:', err);
-    candidatePlan = createDeterministicBatchPlan(bible, control, currentArc, nextChapter, batchSize);
   }
-
-  // Chạy qua PlanValidator để kiểm tra & sửa tự động
-  const validationResult = validateAndRepairBatchPlan(candidatePlan, control, state, nextChapter);
-  return validationResult.repairedPlan;
-}
-
-/**
- * Deterministic Fallback Plan
- */
-function createDeterministicBatchPlan(
-  bible: StoryBible,
-  control: StoryControl,
-  currentArc: any,
-  nextChapter: number,
-  batchSize: number
-): BatchPlan {
-  const mainCharName = bible.characters?.[0]?.name || 'Nhân vật chính';
-  const fallbackChapters: ChapterPlan[] = [];
-
-  for (let i = 0; i < batchSize; i++) {
-    const chNum = nextChapter + i;
-    const isLastInBatch = i === batchSize - 1;
-    fallbackChapters.push({
-      chapterNumber: chNum,
-      title: `Chương ${chNum}: Tiến trình ${currentArc.title}`,
-      focus: `Phát triển xung đột giai đoạn ${currentArc.title}`,
-      povCharacter: mainCharName,
-      pacingTarget: isLastInBatch ? 'cliffhanger' : 'rising_action',
-      requiredEvents: [
-        `Khám phá và xử lý chướng ngại tại chương ${chNum}`,
-        `Tương tác củng cố vị thế và năng lực`
-      ],
-      introducedCharacters: [],
-      activeCharacters: [mainCharName],
-      worldFactInteractions: ['Vận dụng quy tắc bối cảnh thế giới hiện có'],
-      cluesDiscovered: [],
-      forbiddenSpoilers: currentArc.forbiddenSpoilers || []
-    });
-  }
-
-  return {
-    arcId: currentArc.id,
-    startChapter: nextChapter,
-    endChapter: nextChapter + batchSize - 1,
-    batchDirectives: ['Duy trì nhịp độ ổn định', 'Không giải quyết sớm đại cục'],
-    charactersGated: [],
-    antiDriftMeasures: ['Tuân thủ nghiêm ngặt Arc hiện tại'],
-    planValid: true,
-    chapters: fallbackChapters
-  };
+  throw new PlanGenerationError(feedback);
 }
