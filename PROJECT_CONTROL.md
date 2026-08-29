@@ -47,7 +47,7 @@ Status: **PASS**.
 
 Architecture evidence: `server/productionServer.ts` is bundled to `dist-server/productionServer.js`; `npm start` executes that artifact directly, binds `process.env.PORT` (safe default 8080), serves the React build with SPA fallback, and routes `/api/provider` to the existing `handleProviderGateway()` implementation. Production and Vite development instantiate the same `AuthSessionAuthority`; the provider adapter calls it on every request. There is no Origin/Referer/browser-secret/static-token authorization substitute.
 
-Automated evidence: thirteen provider-engine/security regressions and three production-server regressions remain passing. Nine WP-FIN-03 regressions cover login, missing configuration, rate limiting, forged/expired sessions, logout, provider gating, entitlement expiry, Full/Lite parity, and Vite development parity. `npm run test:production-server` performs login/status/authenticated-provider/logout/post-logout denial against built Node output. `npm run test:credential-build` scans 20 browser artifacts with zero provider/auth sentinel leaks and no legacy `PASSWORD_HASH` authority.
+Automated evidence: thirteen provider-engine/security regressions and three production-server regressions remain passing. Sixteen WP-FIN-03 regressions cover login, missing configuration, rate limiting, the eight-hour maximum session TTL, forged/expired sessions, logout, provider gating, entitlement expiry, Full/Lite parity, and Vite development parity. `npm run test:production-server` performs login/status/authenticated-provider/logout/post-logout denial against built Node output. `npm run test:credential-build` scans 20 browser artifacts with zero provider/auth sentinel leaks and no legacy `PASSWORD_HASH` authority.
 
 #### Real Google AI Studio acceptance checklist
 
@@ -77,7 +77,7 @@ WP-FIN-04 through WP-FIN-08 remain open. Whole-product release remains blocked.
 
 | Check | Result |
 | --- | --- |
-| Full Vitest | PASS — 22 files, 373/373 tests |
+| Full Vitest | PASS — 22 files, 380/380 tests |
 | TypeScript | PASS — `npx tsc --noEmit` |
 | Production build | PASS — React build plus `dist-server/productionServer.js`; 881.87 kB largest application chunk; existing >500 kB P2 warning remains |
 | ESLint | Known debt improved — 9 errors, 27 warnings (baseline 10/27; no new debt) |

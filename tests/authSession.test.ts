@@ -120,6 +120,27 @@ describe('WP-FIN-03 stateless server access authority', () => {
   });
 
   it.each([
+    ['default', undefined, 8 * 60 * 60],
+    ['one-hour configuration', '3600', 60 * 60],
+    ['nine-hour configuration', String(9 * 60 * 60), 8 * 60 * 60],
+    ['twenty-four-hour configuration', String(24 * 60 * 60), 8 * 60 * 60],
+    ['invalid configuration', 'not-a-number', 8 * 60 * 60],
+    ['zero configuration', '0', 8 * 60 * 60],
+    ['negative configuration', '-3600', 8 * 60 * 60],
+  ])('bounds the %s session TTL to the eight-hour contract', (_label, configuredTtl, expectedTtl) => {
+    const now = Date.parse('2026-08-29T12:00:00+07:00');
+    const authority = new AuthSessionAuthority({
+      env: { ...BASE_ENV, SESSION_TTL_SECONDS: configuredTtl },
+      now: () => now,
+    });
+    const result = authority.login({ headers: {}, socket: { remoteAddress: 'ttl-test' } } as never, ACCESS_CODE);
+
+    expect(result.response).toMatchObject({ authenticated: true, status: 'AUTHENTICATED' });
+    expect(result.response.sessionExpiresAt).toBe(now + expectedTtl * 1000);
+    expect(result.cookie).toContain(`Max-Age=${expectedTtl}`);
+  });
+
+  it.each([
     ['APP_ACCESS_CODE_HASH', { ...BASE_ENV, APP_ACCESS_CODE_HASH: undefined }],
     ['SESSION_SIGNING_SECRET', { ...BASE_ENV, SESSION_SIGNING_SECRET: undefined }],
   ])('fails closed when %s is missing', async (_name, env) => {

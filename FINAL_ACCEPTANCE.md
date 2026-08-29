@@ -36,7 +36,7 @@ Baseline: accepted `main` commit `ccb52a4`; audit branch `codex/finalization-gat
 - `APP_ACCESS_CODE_HASH` and `SESSION_SIGNING_SECRET` are server-only. The legacy client `PASSWORD_HASH` is removed. Login has bounded in-memory brute-force protection; no database, cloud account, third-party auth package, browser token, or reversible client encryption was added.
 - Full expiry and Lite day 1–3 behavior come from one shared public declaration, but the server is authoritative at login/status/provider boundaries. Client flags remain presentation/feature controls only.
 - IntroPage checks server status, renders a real password input when required, logs in through the server, handles safe differentiated errors, and enters only after authenticated status. Session polling, provider-401 handling, and logout return the UI to access control.
-- Nine focused auth/dev-parity regressions and the built production auth smoke pass.
+- Sixteen focused auth/dev-parity regressions, including the eight-hour maximum session TTL contract, and the built production auth smoke pass.
 - A production-browser check confirmed the password prompt, safe wrong-code feedback, authenticated entry, `HttpOnly`/`SameSite=Strict` cookie behavior, absence of auth material from localStorage, and logout cookie removal. Production `Secure` is covered separately by the server regression because the local browser check used HTTP.
 
 WP-FIN-04 through WP-FIN-08 remain open, so whole-product release acceptance remains **BLOCKED**.
@@ -91,7 +91,7 @@ The accepted product is a single-user, browser-first Vietnamese workspace for lo
 | PDF import runtime | Shipped CSP permits the shipped PDF worker path | PASS | Same-origin worker/assets and successful production-preview import |
 | ZIP/EPUB/DOCX/PDF/backup budgets | Every input boundary enforces size/count/depth/expansion limits | FAIL (P1) | Whole-file/unbounded parsing paths |
 | Backup/restore | Versioned schema is validated and atomically committed with rollback | FAIL (P1) | Session cleared before nested restore validation |
-| Translation core regressions | Default automated translation/text regressions pass | PASS | Included in the 373/373-test Gate 3 run |
+| Translation core regressions | Default automated translation/text regressions pass | PASS | Included in the 380/380-test Gate 3 run |
 | Live provider journeys | Real production credentials/models complete representative calls | NOT VERIFIED | No live audit credential; authenticated production provider mock passes |
 | Story Engine accepted invariants | Previously accepted V3 invariants remain passing in discovered suite | PASS | CEO rework/continuity/Task suites pass in default Vitest run |
 | Repository test discovery | Every test asset is discovered and async failures are awaited | FAIL (P1) | 28-test manual harness excluded; sync helper accepts async callbacks |
@@ -149,7 +149,7 @@ Gate 3 CEO-rework verification:
 
 | Command/check | Result |
 | --- | --- |
-| `npm test -- --reporter=verbose` | PASS — 22 files, 373/373 tests |
+| `npm test -- --reporter=verbose` | PASS — 22 files, 380/380 tests |
 | `npx tsc --noEmit` | PASS |
 | `npm run build` | PASS — React output plus explicit Node production bundle; existing large-chunk warning; largest application chunk 881.87 kB |
 | `npm run lint` | Known debt improved — 9 errors, 27 warnings (baseline 10/27) |

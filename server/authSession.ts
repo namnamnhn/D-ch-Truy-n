@@ -21,7 +21,8 @@ import {
 } from '../shared/editionContract';
 
 const SESSION_COOKIE = 'app_session';
-const DEFAULT_SESSION_TTL_SECONDS = 8 * 60 * 60;
+const MAX_SESSION_TTL_SECONDS = 8 * 60 * 60;
+const DEFAULT_SESSION_TTL_SECONDS = MAX_SESSION_TTL_SECONDS;
 const MAX_AUTH_BODY_BYTES = 4 * 1024;
 const MAX_ACCESS_CODE_LENGTH = 256;
 const DEFAULT_MAX_LOGIN_ATTEMPTS = 5;
@@ -69,7 +70,7 @@ const messageFor = (status: AuthStatusCode): string => ({
 
 const boundedSessionTtl = (raw: string | undefined): number => {
   const value = Number(raw);
-  return Number.isInteger(value) && value >= 60 && value <= 24 * 60 * 60
+  return Number.isInteger(value) && value >= 60 && value <= MAX_SESSION_TTL_SECONDS
     ? value
     : DEFAULT_SESSION_TTL_SECONDS;
 };
