@@ -1,6 +1,29 @@
 # Project Control
 
-## Directive Source and Baseline
+## Current Chairman Directive and Priority
+
+- Chairman: Nguyễn Hoàng Nam.
+- Current operating directive: full CEO handover dated 2026-08-30 (Asia/Saigon).
+- Immediate product priority: Story Creation, beginning with real Google AI Studio production of *THIÊN HẠ GIAN ĐẠO* under the frozen Story Engine V3 contract.
+- Historical WP-FIN packages remain evidence but are not an instruction to resume broad finalization work.
+- Current milestone order: healthy AI Studio Preview auth API; server-side secret configuration; provider verification; canonical V3 setup import and pacing verification; official Chapters 1–2 with QA/state/memory/atomic-save PASS.
+
+## Google AI Studio Runtime Acceptance — PASS
+
+Live app: `https://ai.studio/apps/a3e31270-53c0-42bb-8f66-662c14a7e013`
+
+Verified in the real signed-in AI Studio environment on 2026-08-30:
+
+- Preview executes `npm run dev` as `tsx server.ts --port 3000 --host 0.0.0.0`; it does not use `npm start` for the editable Preview runtime.
+- The server binds `0.0.0.0:3000`, logs `AI_STUDIO_PREVIEW_SERVER listening`, and Preview reports Backend CONNECTED.
+- `/api/auth/status` reaches the app router and returns HTTP 200 app JSON with `application/json; charset=utf-8`; runtime logs record `AI_STUDIO_AUTH_STATUS_REACHED`.
+- The former infrastructure HTML was a cold-start race: the first browser request could arrive while AI Studio still displayed `Starting Server...`. Status checks now accept only valid app JSON, retry transient cold starts with bounded backoff, and keep the intro screen self-healing without replaying login requests.
+- After a real AI Studio backend stop/restart and GitHub sync, the UI recovered to the correct `AUTH_NOT_CONFIGURED` message without weakening authentication.
+- `GEMINI_API_KEY` is selected in AI Studio Secrets and a freshly generated `SESSION_SIGNING_SECRET` is configured server-side. `APP_ACCESS_CODE_HASH` remains intentionally pending until the Chairman supplies the desired access code.
+
+Commit evidence: `205054e` (runtime contract), `b21d3b1` (live route trace), and `45a96ce` (cold-start recovery). Current regression evidence is 24 test files / 386 tests PASS, TypeScript PASS, changed-file ESLint PASS, production build PASS, production-server smoke PASS, credential artifact scan PASS, and PDF build verification PASS. Repository-wide ESLint retains the pre-existing nine-error baseline outside these changes.
+
+## Historical Directive Source and Baseline
 
 - Authoritative directive: `PROJECT_CONTROL.md` and `FINAL_ACCEPTANCE.md` on `main`.
 - Accepted predecessor package: CEO rework/finalization package at `ccb52a4`.
@@ -51,9 +74,10 @@ Automated evidence: thirteen provider-engine/security regressions and three prod
 
 #### Real Google AI Studio acceptance checklist
 
-- Before configuring secrets, confirm Preview logs contain `AI_STUDIO_RUNTIME_READY` and `GET /api/auth/status` returns app-owned JSON with `X-Application-Server: node-production`, never infrastructure HTML.
+- [x] Confirm editable Preview starts through `npm run dev`, logs `AI_STUDIO_PREVIEW_SERVER listening`, and `/api/auth/status` reaches the app router as HTTP 200 JSON rather than infrastructure HTML.
+- [x] Make the browser recover automatically when AI Studio briefly returns `Starting Server...` during a cold start.
+- [ ] Configure the Chairman's `APP_ACCESS_CODE_HASH`. `SESSION_SIGNING_SECRET` and `GEMINI_API_KEY` are already configured in **AI Studio Settings → Secrets**.
 
-- Configure `APP_ACCESS_CODE_HASH`, `SESSION_SIGNING_SECRET`, and `GEMINI_API_KEY` in **AI Studio Settings → Secrets**.
 - Confirm browser DevTools Sources cannot find the key and built browser artifacts contain no key.
 - Confirm provider Network request/response bodies never contain the server key.
 - Complete one ordinary Gemini request and one streaming request.
