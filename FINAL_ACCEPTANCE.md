@@ -2,51 +2,153 @@
 
 ## Candidate
 
-Story Engine V3 — CEO Rework / Finalization Program candidate.
+Whole Application Finalization Program — Gate 1 Product Definition Freeze and Gate 2 Whole-App Technical Audit.
 
-## Acceptance Scope
+Baseline: accepted `main` commit `ccb52a4`; audit branch `codex/finalization-gates-1-2`; audit date 2026-08-29.
 
-- Real one-file language contract.
-- Authoritative `chapterWordTarget` pacing contract.
-- Role-aware production runtime routing.
-- Chapter-scoped, hidden-truth-safe Writer and AutoRepair language allowlisting.
-- Preservation of all non-negotiable Story Engine invariants.
+## Gate Outcomes
 
-## Required Evidence
-
-| Gate | Acceptance condition | Status |
+| Gate | Outcome | Decision basis |
 | --- | --- | --- |
-| Language default | Missing language keys in the production V3 settings shape still enable deterministic Vietnamese script protection | PASS |
-| Language exceptions | Explicit multilingual/opt-out and canonical foreign-term allowlists behave as declared | PASS |
-| Writer language projection | Pre-gate Writer context excludes locked character names and aliases, including explicit author allowlist entries | PASS |
-| AutoRepair language projection | Pre-gate repair prompt/system excludes locked character names and aliases | PASS |
-| Character unlock | Legal names and aliases become available only at/after their chapter gate | PASS |
-| Foreign-script canonical names | Currently visible Cyrillic/Han names remain allowlisted without deterministic false positives | PASS |
-| Validator separation | Validator retains authoritative terms without serializing them into Writer/AutoRepair context | PASS |
-| Pacing normalization | StoryControl stores `2200 / 2700 / 3400`, `soft=true`, and `neverPadWithFiller=true` from production settings | PASS |
-| Pacing consumers | Writer, Validator, AutoRepair, and diagnostics use the same normalized source | PASS |
-| Soft semantics | Minimum deficit is LOW/advisory; maximum remains hard; filler padding remains forbidden | PASS |
-| Runtime routing | Writer, semantic plan validator, semantic story validator, and AutoRepair dispatch with their actual roles | PASS |
-| Tier safety | QUALITY has no silent FAST fallback; semantic exhaustion fails closed | PASS |
-| Regression suite | New CEO rework regression tests pass | PASS |
-| Full tests | Entire Vitest suite passes | PASS |
-| TypeScript | `tsc --noEmit` passes | PASS |
-| Production build | `npm run build` passes | PASS |
-| Diff audit | No invariant regression or unrelated change | PASS |
-| Local commit | Commit created; working tree clean at handoff | PASS |
+| Gate 1 — Product Definition Freeze | PASS | Whole-app product boundary, supported journeys, safety contract, Story Engine invariants, and release-quality definition are frozen below. |
+| Gate 2 — Whole-App Technical Audit | COMPLETE | Repository-wide static, automated, dependency, build, and real-browser audit completed; findings and ordered work packages are recorded. |
+| Product release acceptance | BLOCKED | Two P0 and six P1 findings remain open. Gate completion is not release approval. |
 
-## Invariant Audit
+## Frozen Product Acceptance Definition
+
+The accepted product is a single-user, browser-first Vietnamese workspace for long-form fiction translation, editing, repair, publishing, and original-story generation.
+
+### Accepted user journeys
+
+1. Start the correct Full/Lite edition and satisfy its declared entitlement/expiry rules.
+2. Import TXT, SRT, VTT, ZIP, EPUB, DOC/DOCX, PDF, paste content, Story Engine setup, backup JSON, and support-info JSON without code execution, data corruption, or uncontrolled resource use.
+3. Configure story metadata, languages, dictionary, context, prompts, model tier/provider, batch and ratio controls.
+4. Translate through Gemini/Gemma or optional DeepSeek with bounded retries, honest quota/provider diagnostics, safety isolation, validation, repair, and recoverable cancellation.
+5. Inspect and manually edit results without losing original or accepted work.
+6. Use Knowledge, Prompt Fix, Sino-Vietnamese, automation, and rescue workflows with consistent state and model policy.
+7. Create long-form fiction through Story Engine V3 while preserving every accepted hidden-truth, projection, pacing, validation, repair, routing, continuity, and atomic-save invariant.
+8. Persist work locally, recover after reload/crash, export/download backups, restore compatible data transactionally, and retain a rollback path.
+9. Export completed work as the supported TXT/ZIP/DOCX/EPUB artifacts with stable chapter ordering, content, metadata, and formatting.
+
+### Mandatory release properties
+
+- No provider-owned/shared API secret is embedded in or recoverable from a distributed browser bundle.
+- User credentials and manuscript data have an explicit storage/privacy contract and are excluded from unsafe logs and snapshots.
+- Untrusted files cannot execute application-origin code and are parsed under enforceable resource budgets.
+- Supported production workflows work under the shipped CSP and build artifact, not only in source/unit tests.
+- Destructive imports/restores validate and stage before replacing current durable state.
+- All blocking/quality decisions are fail-closed where the frozen contract says they are authoritative.
+- Tests include all repository test assets, await async work, cover UI/browser boundaries, and run without hidden environment errors.
+- TypeScript, lint, tests, dependency policy, build, and representative browser journeys pass from the authoritative lockfile.
+- Release/deployment/recovery documentation is complete enough for an operator who did not author the code.
+
+### Explicit non-goals for this release
+
+- Multi-user collaboration, cloud account sync, or server-side manuscript storage, unless introduced specifically to secure provider credentials/entitlements.
+- A guarantee that an external model is always available or that every generated passage is subjectively publishable.
+- Silent compatibility with unknown future backup schemas, models, or file formats.
+
+## Whole-App Acceptance Matrix
+
+| Area | Acceptance condition | Current status | Evidence |
+| --- | --- | --- | --- |
+| Product definition | Whole-app scope and release properties are explicit and frozen | PASS | This document and `PROJECT_CONTROL.md` |
+| Main baseline | Audit starts from accepted clean `main` | PASS | `ccb52a4`; branch created directly from `main` |
+| Startup/navigation | Production preview loads and primary pages render | PASS WITH NOTES | Playwright smoke; storage persistence denied warning and favicon 404 |
+| Access/edition | Runtime enforces declared access-code/edition contract | FAIL (P1) | `REQUIRE_CODE`/`PASSWORD_HASH` unused; one-click entry |
+| Gemini credential boundary | Full edition works without exposing a shared build secret | FAIL (P0) | Vite client substitution plus Lite-only BYOK UI |
+| DeepSeek credential boundary | User key is not copied into unsafe durable stores/snapshots | FAIL (P1) | Plaintext localStorage + session + auto-backup |
+| Model inventory | Configured Gemini/Gemma IDs match current provider catalog | PASS | Official Google model documentation checked 2026-08-29 |
+| TXT import | Production build imports ordinary text | PASS | Playwright smoke imported one TXT file |
+| PDF import security | Untrusted PDF parser has no known code-execution exposure | FAIL (P0) | `pdfjs-dist@4.0.379`; GHSA-wgrm-67xf-hhpq |
+| PDF import runtime | Shipped CSP permits the shipped PDF worker path | FAIL (P1) | Playwright CSP error; no PDF workspace item |
+| ZIP/EPUB/DOCX/PDF/backup budgets | Every input boundary enforces size/count/depth/expansion limits | FAIL (P1) | Whole-file/unbounded parsing paths |
+| Backup/restore | Versioned schema is validated and atomically committed with rollback | FAIL (P1) | Session cleared before nested restore validation |
+| Translation core regressions | Default automated translation/text regressions pass | PASS | Included in 342/342 tests |
+| Live provider journeys | Real production credentials/models complete representative calls | NOT VERIFIED | No audit credentials; credential architecture blocks acceptance |
+| Story Engine accepted invariants | Previously accepted V3 invariants remain passing in discovered suite | PASS | CEO rework/continuity/Task suites pass in default Vitest run |
+| Repository test discovery | Every test asset is discovered and async failures are awaited | FAIL (P1) | 28-test manual harness excluded; sync helper accepts async callbacks |
+| UI/browser regression gate | Representative user journeys run automatically in a real browser | FAIL (P1) | No repository Playwright/Cypress/Testing Library suite |
+| TypeScript | `tsc --noEmit` passes | PASS | Exit 0 |
+| ESLint | Repository lint passes with zero errors | FAIL (P2) | 10 errors, 27 warnings |
+| Production build | Build completes within accepted performance budget | PARTIAL (P2) | Exit 0; 874.98 kB chunk warning |
+| Dependency security | No release-blocking runtime advisory; lock/install policy clean | FAIL | Direct PDF.js high advisory; optional critical/high lock paths |
+| Test runtime hygiene | Passing tests produce no hidden environment errors | FAIL (P2) | `localStorage is not defined` emitted to stderr |
+| Logging/privacy | All persisted/exported logs redact credentials and sensitive content | PARTIAL (P2) | Story Engine redacts; global crash logging does not |
+| Documentation/reproducibility | Product, security, deployment, recovery, checks, and authoritative lockfile documented | FAIL (P2) | Starter README; npm and bun lockfiles both tracked |
+| Gate 2 non-implementation rule | Findings are not fixed before register and work packages are complete | PASS | Gate branch changes only finalization control documents after temporary smoke artifacts are removed |
+| Local-only handoff | Commit exists; no push, merge, or PR | PASS | Finalization control documents committed locally on the audit branch after verification/diff review |
+
+## Findings Summary
+
+### P0
+
+- **P0-SEC-001:** vulnerable PDF.js executes untrusted PDF JavaScript in the application origin.
+- **P0-SEC-002:** Full-edition Gemini integration either exposes a shared key in the client or ships inoperable without one.
+
+### P1
+
+- **P1-FUN-001:** CSP blocks the production PDF worker.
+- **P1-AUTH-001:** declared access code is not enforced.
+- **P1-DATA-001:** backup restore is unvalidated and non-transactional.
+- **P1-QA-001:** repository tests are incompletely discovered and have no UI/browser gate.
+- **P1-RES-001:** import/restore resource consumption is unbounded.
+- **P1-CRED-001:** DeepSeek credentials are persisted in plaintext session and auto-backup data.
+
+### P2
+
+- Lint debt; large production chunk; test stderr pollution; optional vulnerable lock paths; fail-open translation safety probe; unredacted global crash logs; incomplete documentation/lockfile authority; legacy Story Engine adapters/fixture debt.
+
+Full evidence and impact are in `PROJECT_CONTROL.md`.
+
+## Proposed Work Packages
+
+| Order | Work package | Exit condition |
+| --- | --- | --- |
+| 1 | WP-FIN-01 — PDF Security and Runtime Containment | Safe PDF.js, CSP-aligned local assets, eval defense, malicious/normal/large PDF browser tests pass |
+| 2 | WP-FIN-02 — Credential and Provider Boundary | No shared key in bundle; explicit Full/Lite credential contract; safe storage/logging; provider health acceptance passes |
+| 3 | WP-FIN-03 — Access and Edition Enforcement | Edition/expiry/entitlement behavior is explicit, enforceable where claimed, and browser-tested |
+| 4 | WP-FIN-04 — Transactional Restore and Compatibility | Version/schema/budget validation, staging, atomic replace, rollback, legacy and malformed tests pass |
+| 5 | WP-FIN-05 — Test Gate Reconstruction | All tests discovered/awaited; clean stderr; UI/E2E suite and coverage thresholds enforced |
+| 6 | WP-FIN-06 — Input Resource Governance | All supported import surfaces have budgets, cancellation, graceful failure, and adversarial tests |
+| 7 | WP-FIN-07 — Quality, Dependency, and Performance Closure | Lint/dependency policy/build budget/console/log/safety-policy debt closed or CEO-dispositioned |
+| 8 | WP-FIN-08 — Release Documentation and Legacy Retirement | Operator docs, package-manager authority, release checklist, legacy adapters and fixture debt closed |
+
+Work packages are intentionally ordered by exploitability and trust boundary before reliability, quality, and documentation.
+
+## Verification Record
+
+| Command/check | Result |
+| --- | --- |
+| `npm test -- --reporter=verbose` | PASS — 18 files, 342 tests |
+| Direct `vitest` of `src/services/storyEngine/storyEngineV3.test.ts` | FAIL TO DISCOVER — excluded by config |
+| `npx tsc --noEmit` | PASS |
+| `npm run build` | PASS with 874.98 kB chunk warning |
+| `npm run lint` | FAIL — 10 errors, 27 warnings |
+| `npm audit --json` / `npm audit --omit=dev --json` | FAIL — 1 critical, 2 high records; direct PDF.js high advisory is runtime-relevant |
+| Production Preview + Playwright startup/navigation | PASS WITH NOTES |
+| Production Preview + Playwright TXT import | PASS |
+| Production Preview + Playwright PDF import | FAIL — CSP blocks worker |
+| Live Gemini/DeepSeek calls | NOT RUN — no credentials; not safe to accept current architecture |
+
+## Preserved Story Engine Invariant Audit
 
 - [x] Fail-closed semantic QA.
+- [x] No QUALITY-to-FAST silent fallback.
 - [x] Maximum two AutoRepair passes.
-- [x] Hidden-truth protection.
-- [x] Chapter-scoped Writer/AutoRepair language allowlisting.
-- [x] Atomic save.
-- [x] Exact chapter contract.
-- [x] Cross-arc isolation.
-- [x] No novel-specific production hard-code.
-- [x] No push, merge, or pull request in this work package.
+- [x] Hidden-truth and chapter-scoped language protection.
+- [x] Validator/Writer/AutoRepair context separation.
+- [x] Atomic accepted batch/state integration.
+- [x] Exact chapter contract and cross-arc isolation.
+- [x] Pacing soft-minimum/hard-maximum/never-pad contract.
+- [x] No novel-specific production hard-code detected.
+
+These accepted subsystem results do not override whole-app P0/P1 findings.
 
 ## Release Decision
 
-PASS — ready for CEO final acceptance. No push, merge, or pull request was performed.
+**BLOCKED.**
+
+Gate 1 and Gate 2 are complete, but the product is not ready for final acceptance or release. CEO authorization should start WP-FIN-01 and WP-FIN-02. After all P0/P1 items close, rerun the entire acceptance matrix, including real provider health, all supported import/export families, persistence/restore recovery, and production-browser E2E.
+
+No push, merge, or pull request is authorized or performed by this program.
