@@ -171,6 +171,7 @@ interface HarnessOptions {
   noSemanticRunner?: boolean;
   semanticRunner?: (prompt: string, systemInstruction: string) => Promise<string>;
   stateResponse?: string;
+  criticalStateFailure?: boolean;
 }
 
 async function execute(options: HarnessOptions = {}) {
@@ -179,6 +180,15 @@ async function execute(options: HarnessOptions = {}) {
   const count = options.count || 2;
   const chapters = existingChapters(startChapter - 1);
   const currentState = state(control, startChapter - 1);
+  let stateIntegrationStarted = false;
+  if (options.criticalStateFailure) {
+    currentState.characterStates = new Proxy(currentState.characterStates, {
+      ownKeys(target) {
+        if (stateIntegrationStarted) throw new Error('simulated critical state merge failure');
+        return Reflect.ownKeys(target);
+      }
+    });
+  }
   const prompts = { planner: [] as string[], planValidator: [] as string[], writer: [] as string[], validator: [] as string[], validatorSystem: [] as string[], repair: [] as string[], state: [] as string[] };
   const systems = { planner: [] as string[], planValidator: [] as string[] };
   const logs: string[] = [];
@@ -194,6 +204,7 @@ async function execute(options: HarnessOptions = {}) {
     }
     if (systemInstruction.includes('State Extractor')) {
       prompts.state.push(prompt);
+      stateIntegrationStarted = true;
       return options.stateResponse || JSON.stringify({
         batchSummary: `Accepted chapters ${startChapter}-${startChapter + count - 1}`,
         unresolvedThreads: ['river_mystery'],
@@ -244,6 +255,7 @@ async function execute(options: HarnessOptions = {}) {
     aiSemanticRunner: options.noSemanticRunner ? undefined : semanticRunner,
     onLog: message => logs.push(message)
   });
+  stateIntegrationStarted = false;
   return { result, bible, control, currentState, chapters, prompts, systems, logs, writerCalls, inputSnapshot };
 }
 
@@ -403,6 +415,15 @@ describe('Story Engine Task 5 - production pipeline acceptance', () => {
     expect(run.result.success).toBe(false);
     expect(JSON.stringify({ chapters: run.chapters, state: run.currentState })).toBe(run.inputSnapshot);
     expect(run.result).toMatchObject({ acceptedChapters: [], newCharacters: [], newMemories: [] });
+  });
+
+  test('critical state integration failure returns STATE_DELTA_INVALID and no partial persistent mutation', async () => {
+    const run = await execute({ count: 1, criticalStateFailure: true });
+    expect(run.result.success).toBe(false);
+    expect(run.result.acceptedChapters).toEqual([]);
+    expect(run.result.newMemories).toEqual([]);
+    expect(run.result.validationResult.violations.map(violation => violation.type)).toContain('STATE_DELTA_INVALID');
+    expect(JSON.stringify({ chapters: run.chapters, state: run.currentState })).toBe(run.inputSnapshot);
   });
 });
 

@@ -93,6 +93,19 @@ function structuralFailure(message: string, chapter: number): ValidationResult {
   };
 }
 
+function stateIntegrationFailure(chapter: number): ValidationResult {
+  return {
+    ...structuralFailure('Critical state integration failed; no persistent update was applied.', chapter),
+    violations: [makeStoryViolation({
+      type: 'STATE_DELTA_INVALID',
+      severity: 'CRITICAL',
+      chapterNumber: chapter,
+      message: 'Critical state integration failed after QA; the entire batch was discarded.',
+      suggestedRepair: 'Retry state integration from the last fully persisted project snapshot.'
+    })]
+  };
+}
+
 function isRepairable(result: ValidationResult): boolean {
   if (result.status !== 'FAIL') return false;
   if (result.violations.some(violation => violation.severity === 'CRITICAL')) return false;
@@ -332,15 +345,24 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
   }
 
   reportProgress('extracting', 'Cập nhật StoryState và memory...', 92);
-  const extracted = await extractAndMergeState(
-    generatedChapters,
-    currentState,
-    control,
-    [...(bible.characters || []), ...generatedCharacters],
-    summaries.join(' '),
-    nextChapter,
-    (prompt, sys) => roleRunner('STATE_EXTRACTOR')(prompt, sys)
-  );
+  let extracted: Awaited<ReturnType<typeof extractAndMergeState>>;
+  try {
+    extracted = await extractAndMergeState(
+      generatedChapters,
+      currentState,
+      control,
+      [...(bible.characters || []), ...generatedCharacters],
+      summaries.join(' '),
+      nextChapter,
+      (prompt, sys) => roleRunner('STATE_EXTRACTOR')(prompt, sys)
+    );
+  } catch {
+    const message = 'Không thể tích hợp trạng thái an toàn; toàn bộ batch đã bị hủy.';
+    reportProgress('failed', message, 100);
+    onLog(`[Pipeline] Critical state integration failed; discarded chapters=[${requested.join(',')}].`);
+    return failResult(message, nextChapter, control, currentState, bible, batchPlan, repairCount,
+      stateIntegrationFailure(nextChapter));
+  }
   const nextMemories = compactMemoryIndex([...currentMemories, ...extracted.newMemories], 240, extracted.nextState);
   reportProgress('completed', 'Hoàn tất lượt viết!', 100);
   return {
