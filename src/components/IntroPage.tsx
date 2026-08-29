@@ -24,8 +24,22 @@ export const IntroPage: React.FC<{ onEnter: () => void }> = ({ onEnter }) => {
 
   useEffect(() => {
     let active = true;
-    void getAuthStatus().then(result => { if (active) setStatus(result); });
-    return () => { active = false; };
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const checkServerSession = async () => {
+      const result = await getAuthStatus();
+      if (!active) return;
+      setStatus(result);
+      if (result.status === 'SERVER_UNAVAILABLE') {
+        retryTimer = setTimeout(() => { void checkServerSession(); }, 3_000);
+      }
+    };
+
+    void checkServerSession();
+    return () => {
+      active = false;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, []);
 
   const handleSubmit = async (event: React.FormEvent) => {
