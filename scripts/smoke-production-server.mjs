@@ -101,7 +101,7 @@ const unconfigured = await startServer({
 try {
   const status = await jsonRequest(`${unconfigured.origin}/api/auth/status`);
   const statusBody = assertJson(status, 'Unconfigured /api/auth/status');
-  if (status.response.status !== 503 || statusBody.status !== 'AUTH_NOT_CONFIGURED') {
+  if (status.response.status !== 200 || statusBody.status !== 'AUTH_NOT_CONFIGURED' || statusBody.authenticated !== false) {
     throw new Error(`Unconfigured auth did not fail safely: ${status.response.status} ${status.text}`);
   }
 } finally {

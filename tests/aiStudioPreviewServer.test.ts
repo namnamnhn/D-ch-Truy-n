@@ -32,6 +32,26 @@ describe('Google AI Studio Preview server adapter', () => {
     preview = undefined;
   });
 
+  it('keeps an unconfigured auth status observable as JSON during Preview startup', async () => {
+    preview = await createAiStudioPreviewServer({
+      env: { NODE_ENV: 'test', APP_ACCESS_CODE_HASH: '', SESSION_SIGNING_SECRET: '' },
+    });
+    preview.httpServer.listen(0, '127.0.0.1');
+    await once(preview.httpServer, 'listening');
+    const address = preview.httpServer.address();
+    if (!address || typeof address === 'string') throw new Error('Expected a TCP address.');
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/auth/status`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('application/json');
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.json() as AuthStatusResponse).toMatchObject({
+      authenticated: false,
+      status: 'AUTH_NOT_CONFIGURED',
+    });
+  });
+
   it('serves all same-origin Gate 3 endpoints ahead of the Vite SPA fallback', async () => {
     preview = await createAiStudioPreviewServer({ env: PREVIEW_ENV });
     preview.httpServer.listen(0, '127.0.0.1');

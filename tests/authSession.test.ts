@@ -146,8 +146,11 @@ describe('WP-FIN-03 stateless server access authority', () => {
   ])('fails closed when %s is missing', async (_name, env) => {
     const baseUrl = await start({ env });
     const status = await fetch(`${baseUrl}/api/auth/status`);
-    expect(status.status).toBe(503);
-    expect((await authJson(status)).status).toBe('AUTH_NOT_CONFIGURED');
+    expect(status.status).toBe(200);
+    expect(await authJson(status)).toMatchObject({
+      authenticated: false,
+      status: 'AUTH_NOT_CONFIGURED',
+    });
   });
 
   it('rejects forged/tampered cookies before executing an owner provider key', async () => {

@@ -374,8 +374,12 @@ export function createAuthRequestHandler(authority: AuthSessionAuthority) {
         return writeAuthResponse(response, rejected());
       }
       const inspection = authority.inspect(request).response;
-      const normalStatus = ['AUTH_REQUIRED', 'SESSION_EXPIRED'].includes(inspection.status) ? 200 : undefined;
-      return writeAuthResponse(response, inspection, undefined, normalStatus);
+      // This is a control-plane status read, not an authorization decision.
+      // AI Studio Preview treats an application 503 as an unhealthy backend and
+      // replaces its JSON body with infrastructure HTML. Keep every valid
+      // same-origin status inspection observable as JSON while login/provider
+      // requests continue to enforce their fail-closed HTTP status codes.
+      return writeAuthResponse(response, inspection, undefined, 200);
     }
 
     if (pathname === AUTH_LOGOUT_PATH) {
