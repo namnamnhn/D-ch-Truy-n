@@ -18,6 +18,25 @@ Story Engine V3 remains a release-critical subsystem, but final product acceptan
 
 FINALIZATION PROGRAM — Gate 1 and Gate 2 complete. Release is **BLOCKED** by two open P0 findings. The predecessor Story Engine package remains accepted; this decision concerns whole-app production acceptance.
 
+## Gate 3 — P0 Closure Program (In Progress)
+
+Branch: `codex/finalization-p0-closure`, created from clean updated `main` at `4c190170e44196f245e8cddaa0062b85f1a43072`.
+
+### WP-FIN-01 — PDF Security and Runtime Containment
+
+Status: **PASS**.
+
+| Finding | Verdict | Evidence |
+| --- | --- | --- |
+| P0-SEC-001 | PASS | `pdfjs-dist` upgraded from 4.0.379 to current 6.2.108; both npm audits report zero vulnerabilities; document initialization is fail-closed (`stopAtErrors: true`, XFA disabled) and retains `isEvalSupported: false` for APIs that expose the compatibility control. |
+| P1-FUN-001 | PASS | Vite emits a hashed local `pdf.worker.min-*.mjs` and same-origin CMap/ICC/font/WASM assets. Production CSP remains `worker-src 'self' blob:` without `unsafe-eval` or a public PDF CDN. |
+
+Automated evidence: six WP-FIN-01 Vitest regressions cover ordinary and malformed fixtures, eval defense, local worker/CSP, dependency range, and accepted-workspace preservation. `npm run test:pdf-build` verifies the emitted worker/assets and production CSP. A production-preview Playwright upload imported `tests/fixtures/ordinary.pdf` as one 65-character workspace item; the observed PDF runtime requests were only the same-origin `assets/pdf-*.js` and `assets/pdf.worker.min-*.mjs`, both HTTP 200. The only browser console error remained the pre-existing missing favicon 404.
+
+Selected version rationale: 6.2.108 was the current npm release on 2026-08-29, is maintained upstream, is well beyond the vulnerable `<=4.1.392` range, declares compatibility with the repository's Node 24 runtime, and removes the vulnerable optional `canvas`/`node-pre-gyp`/`tar` chain from the active lock tree.
+
+WP-FIN-02 remains in progress. WP-FIN-03 through WP-FIN-08 remain open; this PASS does not make the product release-ready.
+
 ## Gate 1 — Product Definition Freeze
 
 Status: **PASS**.

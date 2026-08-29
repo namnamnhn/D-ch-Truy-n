@@ -1,6 +1,53 @@
 import path from 'path';
-import { defineConfig, loadEnv } from 'vite';
+import { createReadStream } from 'node:fs';
+import { cp, stat } from 'node:fs/promises';
+import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
+
+const PDFJS_ASSET_ROUTE = '/pdfjs-assets/';
+const PDFJS_ASSET_DIRECTORIES = ['cmaps', 'iccs', 'standard_fonts', 'wasm'] as const;
+
+const pdfjsLocalAssets = (): Plugin => {
+  const pdfjsRoot = path.resolve(__dirname, 'node_modules/pdfjs-dist');
+
+  return {
+    name: 'pdfjs-local-assets',
+    configureServer(server) {
+      server.middlewares.use(PDFJS_ASSET_ROUTE, async (request, response, next) => {
+        try {
+          const rawPath = decodeURIComponent((request.url || '').split('?')[0]).replace(/^\/+/, '');
+          const relativePath = rawPath.startsWith('pdfjs-assets/')
+            ? rawPath.slice('pdfjs-assets/'.length)
+            : rawPath;
+          const isApprovedAsset = PDFJS_ASSET_DIRECTORIES.some(
+            directory => relativePath === directory || relativePath.startsWith(`${directory}/`),
+          );
+          if (!isApprovedAsset) return next();
+
+          const resolvedPath = path.resolve(pdfjsRoot, relativePath);
+          if (!resolvedPath.startsWith(`${pdfjsRoot}${path.sep}`)) return next();
+          if (!(await stat(resolvedPath)).isFile()) return next();
+
+          const extension = path.extname(resolvedPath).toLowerCase();
+          response.setHeader('Content-Type', extension === '.wasm' ? 'application/wasm' : 'application/octet-stream');
+          createReadStream(resolvedPath).pipe(response);
+        } catch {
+          next();
+        }
+      });
+    },
+    async writeBundle(options) {
+      const outputDirectory = path.resolve(__dirname, options.dir || 'dist');
+      await Promise.all(PDFJS_ASSET_DIRECTORIES.map(directory =>
+        cp(
+          path.join(pdfjsRoot, directory),
+          path.join(outputDirectory, 'pdfjs-assets', directory),
+          { recursive: true },
+        ),
+      ));
+    },
+  };
+};
 
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
@@ -54,7 +101,7 @@ export default defineConfig(({ mode }) => {
           target: 'esnext'
         }
       },
-      plugins: [react()],
+      plugins: [react(), pdfjsLocalAssets()],
       define: {
         'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
         'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)

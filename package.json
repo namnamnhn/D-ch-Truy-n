@@ -8,6 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "test": "vitest run",
+    "test:pdf-build": "node scripts/verify-pdf-build.mjs",
     "test:watch": "vitest",
     "changelog:add": "node scripts/add-changelog-entry.cjs",
     "preview": "vite preview",
@@ -18,7 +19,7 @@
     "docx": "^9.6.1",
     "jszip": "^3.10.1",
     "lucide-react": "^0.556.0",
-    "pdfjs-dist": "4.0.379",
+    "pdfjs-dist": "6.2.108",
     "react": "^19.2.1",
     "react-dom": "^19.2.1"
   },

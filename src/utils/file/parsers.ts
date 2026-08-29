@@ -5,6 +5,7 @@ import { readFileAsText, parseFilenameMetadata } from './core';
 import { splitJapaneseVerticalPdfByMarkers } from './pdfVerticalChapterSplitter';
 import { detectChapterFormat } from './splitters';
 import { cleanGarbageText } from '../text/garbageCleaner';
+import { createSecurePdfDocumentOptions, loadPdfjs } from './pdfRuntime';
 
 // NÂNG CẤP (đề xuất mục 4.2): jszip/pdfjs-dist nặng (~734KB chunk vendor-docs) nhưng chỉ dùng
 // khi người dùng NHẬP file zip/epub/docx/pdf — trước đây bị import tĩnh nên tải kèm lần đầu
@@ -16,19 +17,6 @@ let jszipPromise: Promise<{ default: JsZipModule }> | null = null;
 const loadJsZip = (): Promise<{ default: JsZipModule }> => {
     if (!jszipPromise) jszipPromise = import('jszip') as unknown as Promise<{ default: JsZipModule }>;
     return jszipPromise;
-};
-
-type PdfJsModule = typeof import('pdfjs-dist');
-let pdfjsPromise: Promise<PdfJsModule> | null = null;
-const loadPdfjs = (): Promise<PdfJsModule> => {
-    if (!pdfjsPromise) {
-        pdfjsPromise = import('pdfjs-dist').then((pdfjsLib) => {
-            // Configure PDF Worker
-            pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs';
-            return pdfjsLib;
-        });
-    }
-    return pdfjsPromise;
 };
 
 export const unzipFiles = async (file: File, onProgress?: (current: number, total: number, percent: number) => void): Promise<FileItem[]> => {
@@ -125,19 +113,17 @@ export const parseDocx = async (file: File): Promise<{ content: string, title?: 
 };
 
 export const parsePdf = async (file: File, onProgress?: (percent: number, msg: string) => void): Promise<{ content: string, files: FileItem[], title?: string, author?: string }> => {
+    let loadingTask: ReturnType<(typeof import('pdfjs-dist'))['getDocument']> | undefined;
     try {
         const pdfjsLib = await loadPdfjs();
         const arrayBuffer = await file.arrayBuffer();
         // Một số PDF (đặc biệt PDF tiếng Nhật/Trung dùng font CID nhúng, ví dụ các bản convert
         // từ Syosetu) cần dữ liệu CMap + font chuẩn để pdfjs giải mã đúng ký tự. Thiếu 2 tham số
         // này, pdfjs âm thầm đọc được 0 ký tự ở MỌI trang (không báo lỗi), khiến toàn bộ nội dung
-        // hiện thành "[TRANG N: KHÔNG TÌM THẤY VĂN BẢN]". Trỏ tới cùng CDN đã dùng cho pdf.worker.
-        const loadingTask = pdfjsLib.getDocument({
-            data: arrayBuffer,
-            cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/cmaps/',
-            cMapPacked: true,
-            standardFontDataUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/standard_fonts/',
-        });
+        // hiện thành "[TRANG N: KHÔNG TÌM THẤY VĂN BẢN]". Các asset này được ship cùng ứng dụng.
+        loadingTask = pdfjsLib.getDocument(
+            createSecurePdfDocumentOptions(arrayBuffer) as Parameters<typeof pdfjsLib.getDocument>[0],
+        );
         const pdf = await loadingTask.promise;
         const totalPages = pdf.numPages;
         let metaTitle = undefined;
@@ -235,7 +221,13 @@ export const parsePdf = async (file: File, onProgress?: (percent: number, msg: s
         if (splitFiles.length === 0) fullText = pageCache.join("");
         if (onProgress) onProgress(100, "Hoàn tất.");
         return { content: fullText.trim(), files: splitFiles, title: metaTitle, author: metaAuthor };
-    } catch (e: any) { throw new Error(`Lỗi đọc PDF: ${e.message}`, { cause: e }); }
+    } catch (e: any) {
+        throw new Error(`Lỗi đọc PDF: ${e.message}`, { cause: e });
+    } finally {
+        if (loadingTask) {
+            try { await loadingTask.destroy(); } catch { /* best-effort worker/resource containment */ }
+        }
+    }
 };
 
 export const readDocumentContent = async (file: File): Promise<string> => {

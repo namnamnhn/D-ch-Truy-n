@@ -14,6 +14,17 @@ Baseline: accepted `main` commit `ccb52a4`; audit branch `codex/finalization-gat
 | Gate 2 — Whole-App Technical Audit | COMPLETE | Repository-wide static, automated, dependency, build, and real-browser audit completed; findings and ordered work packages are recorded. |
 | Product release acceptance | BLOCKED | Two P0 and six P1 findings remain open. Gate completion is not release approval. |
 
+## Gate 3 P0 Closure Evidence (In Progress)
+
+### WP-FIN-01 — PASS
+
+- **P0-SEC-001: PASS.** PDF.js moved from 4.0.379 to current 6.2.108. `npm audit --json` and `npm audit --omit=dev --json` now report zero vulnerabilities, including no active PDF.js advisory.
+- **P1-FUN-001: PASS.** The Vite production build ships a hashed same-origin worker and local CMap/ICC/standard-font/WASM directories. CSP remains restrictive (`worker-src 'self' blob:`, no `unsafe-eval`, no PDF CDN origin).
+- PDF document initialization uses `stopAtErrors: true`, `enableXfa: false`, and the explicit compatibility defense `isEvalSupported: false` where supported; the loading task is destroyed in a `finally` boundary.
+- Six focused Vitest regressions pass, including ordinary/malformed fixtures and preservation of an accepted workspace on failure. Production build verification passes, and production-preview Playwright successfully imported the ordinary PDF through the real file chooser with the worker returning HTTP 200 from the application origin.
+
+WP-FIN-02 is not yet accepted. WP-FIN-03 through WP-FIN-08 remain open, so whole-product release acceptance remains **BLOCKED**.
+
 ## Frozen Product Acceptance Definition
 
 The accepted product is a single-user, browser-first Vietnamese workspace for long-form fiction translation, editing, repair, publishing, and original-story generation.
