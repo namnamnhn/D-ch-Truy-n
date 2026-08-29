@@ -46,6 +46,7 @@ describe('Google AI Studio Preview server adapter', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('application/json');
     expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('x-application-server')).toBe('node-preview');
     expect(await response.json() as AuthStatusResponse).toMatchObject({
       authenticated: false,
       status: 'AUTH_NOT_CONFIGURED',
