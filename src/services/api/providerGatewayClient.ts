@@ -23,6 +23,9 @@ export class ProviderGatewayError extends Error {
 
 async function throwGatewayError(response: Response): Promise<never> {
   const body = await response.json().catch(() => null) as ProviderErrorPayload | null;
+  if (response.status === 401 && typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('auth-session-invalid'));
+  }
   throw new ProviderGatewayError(
     body?.error?.message || `Provider gateway failed with HTTP ${response.status}.`,
     body?.error?.code || 'PROVIDER_ERROR',
@@ -36,6 +39,7 @@ export async function callProviderGateway<T>(payload: ProviderGatewayRequest, si
   try {
     response = await fetch(PROVIDER_GATEWAY_PATH, {
       method: 'POST',
+      credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
       signal,
@@ -55,6 +59,7 @@ export async function openProviderGatewayStream(payload: ProviderGatewayRequest,
   try {
     response = await fetch(PROVIDER_GATEWAY_PATH, {
       method: 'POST',
+      credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
       signal,

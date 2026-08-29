@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { access, readFile } from 'node:fs/promises';
@@ -7,7 +8,8 @@ import path from 'node:path';
 const root = process.cwd();
 const serverEntry = path.join(root, 'dist-server', 'productionServer.js');
 const browserEntry = path.join(root, 'dist', 'index.html');
-await Promise.all([access(serverEntry), access(browserEntry)]);
+const smokeHost = path.join(root, 'scripts', 'production-smoke-host.mjs');
+await Promise.all([access(serverEntry), access(browserEntry), access(smokeHost)]);
 
 const packageJson = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
 if (packageJson.scripts?.start !== 'node dist-server/productionServer.js') {
@@ -23,13 +25,19 @@ const port = probeAddress.port;
 probe.close();
 await once(probe, 'close');
 
+const accessCode = 'production-smoke-access-code';
+const accessHash = createHash('sha256').update(accessCode).digest('hex');
+const signingSecret = 'production-smoke-signing-secret-at-least-32-bytes';
 const geminiSecret = 'AIza_PRODUCTION_SMOKE_SENTINEL_123456789012345';
 const deepSeekSecret = 'sk-production-smoke-sentinel-1234567890';
-const child = spawn(process.execPath, [serverEntry], {
+const child = spawn(process.execPath, [smokeHost], {
   cwd: root,
   env: {
     ...process.env,
+    NODE_ENV: 'test',
     PORT: String(port),
+    APP_ACCESS_CODE_HASH: accessHash,
+    SESSION_SIGNING_SECRET: signingSecret,
     GEMINI_API_KEY: geminiSecret,
     DEEPSEEK_API_KEY: deepSeekSecret,
   },
@@ -45,7 +53,7 @@ child.stderr.on('data', chunk => { output += chunk; });
 const waitForStartup = new Promise((resolve, reject) => {
   const deadline = setTimeout(() => reject(new Error(`Production server startup timed out.\n${output}`)), 15_000);
   const check = () => {
-    if (!output.includes('NODE_PRODUCTION_SERVER')) return;
+    if (!output.includes('NODE_PRODUCTION_AUTH_SMOKE')) return;
     clearTimeout(deadline);
     resolve();
   };
@@ -56,46 +64,67 @@ const waitForStartup = new Promise((resolve, reject) => {
   });
 });
 
+const jsonRequest = (url, init) => fetch(url, init).then(async response => ({
+  response,
+  text: await response.text(),
+}));
+
 try {
   await waitForStartup;
-  const appResponse = await fetch(`http://127.0.0.1:${port}/`);
+  const origin = `http://127.0.0.1:${port}`;
+  const appResponse = await fetch(`${origin}/`);
   const appHtml = await appResponse.text();
-  const providerResponse = await fetch(`http://127.0.0.1:${port}/api/provider`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      provider: 'gemini',
-      action: 'generate',
-      request: { model: 'gemini-3.5-flash', contents: 'production smoke' },
-    }),
-  });
-  const providerBody = await providerResponse.text();
-
   if (!appResponse.ok || !appHtml.includes('<div id="root"')) {
-    throw new Error('Built React application was not served by the production Node entry.');
+    throw new Error('Built React application was not served by the built production Node entry.');
   }
-  if (providerResponse.headers.get('x-application-server') !== 'node-production') {
-    throw new Error('/api/provider was not served by the production Node server.');
+
+  const unauthenticated = await jsonRequest(`${origin}/api/provider`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: 'gemini', action: 'generate', request: { model: 'gemini-3.5-flash', contents: 'denied' } }),
+  });
+  if (unauthenticated.response.status !== 401) throw new Error('Unauthenticated provider request was not rejected.');
+
+  const login = await jsonRequest(`${origin}/api/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: accessCode }),
+  });
+  if (login.response.status !== 200 || !JSON.parse(login.text).authenticated) throw new Error(`Production login failed: ${login.text}`);
+  const cookie = (login.response.headers.get('set-cookie') || '').split(';')[0];
+  if (!cookie.startsWith('app_session=')) throw new Error('Production login did not issue a session cookie.');
+
+  const status = await jsonRequest(`${origin}/api/auth/status`, { headers: { Cookie: cookie } });
+  if (status.response.status !== 200 || !JSON.parse(status.text).authenticated) throw new Error('Authenticated status failed.');
+
+  const provider = await jsonRequest(`${origin}/api/provider`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ provider: 'gemini', action: 'generate', request: { model: 'gemini-3.5-flash', contents: 'production smoke' } }),
+  });
+  if (provider.response.headers.get('x-application-server') !== 'node-production') throw new Error('/api/provider was not served by the production Node server.');
+  if (provider.response.status !== 200 || JSON.parse(provider.text).text !== 'authenticated production mock') {
+    throw new Error(`Authenticated provider mock failed: ${provider.response.status} ${provider.text}`);
   }
-  if (providerResponse.status !== 503 || JSON.parse(providerBody)?.error?.code !== 'AUTHORIZATION_NOT_CONFIGURED') {
-    throw new Error(`Provider route did not honestly fail closed pending WP-FIN-03: ${providerResponse.status} ${providerBody}`);
-  }
-  const observableBrowserOutput = `${appHtml}\n${providerBody}`;
-  if (observableBrowserOutput.includes(geminiSecret) || observableBrowserOutput.includes(deepSeekSecret)) {
-    throw new Error('A server credential appeared in browser-observable production output.');
+
+  const logout = await jsonRequest(`${origin}/api/auth/logout`, { method: 'POST', headers: { Cookie: cookie } });
+  const clearedCookie = (logout.response.headers.get('set-cookie') || '').split(';')[0];
+  if (clearedCookie !== 'app_session=') throw new Error('Logout did not clear the production session cookie.');
+  const rejectedAfterLogout = await jsonRequest(`${origin}/api/provider`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: clearedCookie },
+    body: JSON.stringify({ provider: 'gemini', action: 'generate', request: { model: 'gemini-3.5-flash', contents: 'denied after logout' } }),
+  });
+  if (rejectedAfterLogout.response.status !== 401) throw new Error('Provider remained accessible after logout.');
+
+  const browserObservable = [appHtml, unauthenticated.text, login.text, status.text, provider.text, logout.text, rejectedAfterLogout.text].join('\n');
+  for (const secret of [accessCode, accessHash, signingSecret, geminiSecret, deepSeekSecret]) {
+    if (browserObservable.includes(secret)) throw new Error('A server authentication/provider secret appeared in browser-observable output.');
   }
   if (output.includes('vite preview')) throw new Error('Production smoke unexpectedly depended on Vite preview.');
-
-  console.log(`Production server smoke PASS: built React app and fail-closed /api/provider served by Node on PORT=${port}.`);
+  console.log(`Production auth smoke PASS: login/status/provider/logout/reject-after-logout on built Node output PORT=${port}.`);
 } finally {
   if (child.exitCode === null && child.signalCode === null) {
     const exited = once(child, 'exit');
     child.kill('SIGTERM');
     let timeout;
-    await Promise.race([
-      exited,
-      new Promise(resolve => { timeout = setTimeout(resolve, 5_000); }),
-    ]);
+    await Promise.race([exited, new Promise(resolve => { timeout = setTimeout(resolve, 5_000); })]);
     clearTimeout(timeout);
   }
 }

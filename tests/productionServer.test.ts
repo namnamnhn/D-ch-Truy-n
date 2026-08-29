@@ -1,4 +1,5 @@
 import { once } from 'node:events';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -11,6 +12,12 @@ const GEMINI_PAYLOAD = {
   provider: 'gemini',
   action: 'generate',
   request: { model: 'gemini-3.5-flash', contents: 'Hello' },
+};
+const ACCESS_CODE = 'production-server-test-code';
+const AUTH_ENV = {
+  NODE_ENV: 'test',
+  APP_ACCESS_CODE_HASH: createHash('sha256').update(ACCESS_CODE).digest('hex'),
+  SESSION_SIGNING_SECRET: 'production-server-test-signing-secret-32-bytes',
 };
 
 describe('WP-FIN-02 production Node server', () => {
@@ -43,7 +50,7 @@ describe('WP-FIN-02 production Node server', () => {
     return `http://127.0.0.1:${address.port}`;
   };
 
-  it('serves the built React app and exposes a fail-closed provider route on the same Node server', async () => {
+  it('serves the built React app and keeps provider execution fail-closed without server auth configuration', async () => {
     const geminiSecret = 'AIza-production-owner-sentinel-123456789012345';
     const deepSeekSecret = 'sk-production-owner-sentinel-1234567890';
     const baseUrl = await start({ env: { GEMINI_API_KEY: geminiSecret, DEEPSEEK_API_KEY: deepSeekSecret } });
@@ -60,14 +67,14 @@ describe('WP-FIN-02 production Node server', () => {
     expect(appResponse.status).toBe(200);
     expect(appHtml).toContain('built-react-app');
     expect(providerResponse.headers.get('x-application-server')).toBe('node-production');
-    expect(providerResponse.status).toBe(503);
-    expect(JSON.parse(providerBody).error.code).toBe('AUTHORIZATION_NOT_CONFIGURED');
+    expect(providerResponse.status).toBe(401);
+    expect(JSON.parse(providerBody).error.code).toBe('UNAUTHORIZED');
     expect(`${appHtml}\n${providerBody}`).not.toContain(geminiSecret);
     expect(`${appHtml}\n${providerBody}`).not.toContain(deepSeekSecret);
   });
 
-  it('rejects an unauthenticated request when a future authorization authority is connected', async () => {
-    const baseUrl = await start({ authorizeProviderRequest: async () => false });
+  it('rejects an unauthenticated request before provider execution', async () => {
+    const baseUrl = await start({ env: AUTH_ENV });
     const response = await fetch(`${baseUrl}/api/provider`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -78,10 +85,16 @@ describe('WP-FIN-02 production Node server', () => {
   });
 
   it('reports a missing server secret safely only after server-side authorization succeeds', async () => {
-    const baseUrl = await start({ env: {}, authorizeProviderRequest: async () => true });
-    const response = await fetch(`${baseUrl}/api/provider`, {
+    const baseUrl = await start({ env: AUTH_ENV });
+    const login = await fetch(`${baseUrl}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: ACCESS_CODE }),
+    });
+    const cookie = (login.headers.get('set-cookie') || '').split(';')[0];
+    const response = await fetch(`${baseUrl}/api/provider`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify(GEMINI_PAYLOAD),
     });
     const body = await response.json() as ProviderErrorPayload;

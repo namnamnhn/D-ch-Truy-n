@@ -5,7 +5,7 @@ import {
     Terminal, FileText, Loader2, AlertCircle, Settings,
     Activity, Moon, Sun, ChevronUp, ChevronDown, 
     Scale, HardDrive, Maximize, Minimize,
-    Ban, Hourglass
+    Ban, Hourglass, LogOut
 } from 'lucide-react';
 import { APP_FULL_TITLE } from '../changelog';
 import { ModelQuota, BatchLimits, RatioLimits } from '../types';
@@ -131,6 +131,7 @@ interface HeaderProps {
     setShowSettings: (v: boolean) => void;
     onShowChangelog: () => void;
     onShowIntro: () => void;
+    onLogout: () => void;
     enabledModels: string[];
     modelConfigs: ModelQuota[];
     modelUsages: any;
@@ -272,6 +273,7 @@ export const Header: React.FC<HeaderProps> = (props) => {
                     </div>
                     <button onClick={props.onShowIntro} className="px-2 py-0.5 ml-2 text-[10px] font-bold bg-amber-100/50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-500 rounded-lg border border-amber-200/50 dark:border-amber-800/50 hover:bg-amber-100 dark:hover:bg-amber-900/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 focus-visible:ring-offset-1">Về tác giả</button>
                     <button aria-label="Hướng dẫn sử dụng" onClick={props.onShowChangelog} className="text-slate-400 hover:text-primary-600 dark:hover:text-primary-400 transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 focus-visible:ring-offset-1"><HelpCircle className="w-3.5 h-3.5" /></button>
+                    <button aria-label="Đăng xuất" onClick={props.onLogout} className="p-1 rounded text-slate-400 hover:text-rose-500 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400"><LogOut className="w-3.5 h-3.5" /></button>
                 </div>
                 
                 <div className="flex items-center gap-1 relative z-50">

@@ -5,9 +5,13 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PROVIDER_GATEWAY_PATH } from '../shared/providerContract';
 import {
+  AuthSessionAuthority,
+  createAuthRequestHandler,
+  isAuthPath,
+} from './authSession';
+import {
   createProviderRequestHandler,
   type ProviderGatewayDependencies,
-  type ProviderRequestAuthorizer,
 } from './providerGateway';
 
 const DEFAULT_PORT = 8080;
@@ -30,8 +34,8 @@ const CONTENT_TYPES: Record<string, string> = {
 export interface ProductionServerOptions {
   buildDirectory?: string;
   env?: NodeJS.ProcessEnv;
-  authorizeProviderRequest?: ProviderRequestAuthorizer;
   providerDependencies?: Omit<ProviderGatewayDependencies, 'env'>;
+  authAuthority?: AuthSessionAuthority;
 }
 
 const safePort = (value: string | undefined): number => {
@@ -102,18 +106,23 @@ async function serveStatic(
 
 export function createProductionServer(options: ProductionServerOptions = {}): Server {
   const buildDirectory = path.resolve(options.buildDirectory || DEFAULT_BUILD_DIRECTORY);
+  const env = options.env || process.env;
+  const authAuthority = options.authAuthority || new AuthSessionAuthority({ env });
+  const handleAuthRequest = createAuthRequestHandler(authAuthority);
   const handleProviderRequest = createProviderRequestHandler({
-    env: options.env || process.env,
+    env,
     ...options.providerDependencies,
-    authorizeRequest: options.authorizeProviderRequest,
+    authorizeRequest: authAuthority.authorizeRequest,
   });
 
   return createServer((request, response) => {
     const pathname = (request.url || '').split('?')[0];
     if (pathname === PROVIDER_GATEWAY_PATH) response.setHeader('X-Application-Server', 'node-production');
-    const operation = pathname === PROVIDER_GATEWAY_PATH
-      ? handleProviderRequest(request, response)
-      : serveStatic(request, response, buildDirectory);
+    const operation = isAuthPath(pathname)
+      ? handleAuthRequest(request, response)
+      : pathname === PROVIDER_GATEWAY_PATH
+        ? handleProviderRequest(request, response)
+        : serveStatic(request, response, buildDirectory);
     void operation.catch(() => {
       if (!response.headersSent) sendText(response, 500, 'Internal Server Error');
       else response.destroy();
@@ -122,9 +131,9 @@ export function createProductionServer(options: ProductionServerOptions = {}): S
 }
 
 export function startProductionServer(options: ProductionServerOptions = {}): Server {
-  const env = options.env || process.env;
+  const env = options.env || { ...process.env, NODE_ENV: process.env.NODE_ENV || 'production' };
   const port = safePort(env.PORT);
-  const server = createProductionServer(options);
+  const server = createProductionServer({ ...options, env });
   server.listen(port, '0.0.0.0', () => {
     const address = server.address();
     const boundPort = typeof address === 'object' && address ? address.port : port;

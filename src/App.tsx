@@ -3,7 +3,6 @@ import React, { useEffect, useState, useRef } from 'react';
 import { deepSeekKeyManager } from './services/api/deepseek';
 import { MainUI } from './components/MainUI';
 import { ModalManager } from './components/ModalManager';
-import { IS_LITE, isWithinLicense } from './constants';
 import { ToastContainer, LoadingModal, RawDownloadModal, ApiSettingsModal } from './components/modals';
 import { Loader2, AlertTriangle, UploadCloud } from 'lucide-react';
 import { IntroPage } from './components/IntroPage';
@@ -16,14 +15,15 @@ import { useAutomation } from './hooks/useAutomation';
 import { useAppHandlers } from './hooks/useAppHandlers';
 
 import { FileStatus, RatioLimits, FileItem } from './types';
-import { generateBasePrompt, ACCESS_CONFIG } from './constants';
+import { generateBasePrompt } from './constants';
 import { DEFAULT_RATIO_LIMITS } from './constants/ratioLimits';
 import { downloadTextFile } from './utils/fileHelpers';
 import { quotaManager } from './utils/quotaManager';
 import { countForeignChars, validateTranslationIntegrity } from './utils/text';
+import { getAuthStatus, logoutServerSession } from './services/api/authClient';
 
 const App: React.FC = () => {
-  const [hasSeenIntro, setHasSeenIntro] = useState<boolean>(false);
+  const [authState, setAuthState] = useState<'checking' | 'authenticated' | 'unauthenticated'>('checking');
   const [forceShowIntro, setForceShowIntro] = useState<boolean>(false);
   const dragDepthRef = useRef(0);
 
@@ -207,51 +207,55 @@ const App: React.FC = () => {
       deepSeekKeyManager.syncKeys(core.deepseekKey);
   }, [core.deepseekKey]);
 
-  // GIÁM SÁT HẠN SỬ DỤNG NGAY CẢ KHI APP ĐANG MỞ (không đóng tab):
-  // Trước đây EXPIRY_TS chỉ được kiểm tra 1 LẦN lúc bấm "Vào Ứng Dụng" ở IntroPage. Nếu người
-  // dùng đã vào app từ trước khi hết hạn và cứ để tab mở xuyên qua thời điểm hết hạn, họ vẫn dùng
-  // được app bình thường (vì không có gì kiểm tra lại sau đó). Effect này chủ động:
-  //   1. Kiểm tra định kỳ (mỗi 30s) — đủ nhanh để không cần chờ người dùng F5 mà vẫn nhẹ tài nguyên.
-  //   2. Kiểm tra ngay khi tab được focus/visible trở lại (visibilitychange) — xử lý luôn trường
-  //      hợp máy sleep/tab bị trình duyệt "đóng băng" khiến setInterval bị trì hoãn.
-  // Khi phát hiện đã quá EXPIRY_TS, set forceShowIntro=true để App tự động render lại IntroPage
-  // (đã tự hiện thông báo "hết hạn" ngay khi mount — xem IntroPage.tsx), coi như đá người dùng
-  // ra khỏi app, chặn truy cập tiếp mà không cần họ phải tắt/mở lại tab.
   // FIX59 (Lite): lắng nghe event yêu cầu nhập API Key Gemini -> mở Cài đặt
   useEffect(() => {
       const openKey = () => ui.setShowSettings(true);
+      const invalidateSession = () => {
+          setAuthState('unauthenticated');
+          setForceShowIntro(true);
+      };
       window.addEventListener('open-gemini-key-settings', openKey);
-      return () => window.removeEventListener('open-gemini-key-settings', openKey);
+      window.addEventListener('auth-session-invalid', invalidateSession);
+      return () => {
+          window.removeEventListener('open-gemini-key-settings', openKey);
+          window.removeEventListener('auth-session-invalid', invalidateSession);
+      };
   }, []);
 
   useEffect(() => {
-      if (!ACCESS_CONFIG.EXPIRY_TS && !IS_LITE) return;
-
-      const checkExpiry = () => {
-          // FIX59: dùng isWithinLicense() hợp nhất — Full theo EXPIRY_TS, Lite chỉ mở ngày 1-3
-          if (!isWithinLicense()) {
-              setForceShowIntro(true);
-          }
+      let active = true;
+      const checkServerSession = async () => {
+          const status = await getAuthStatus();
+          if (!active) return;
+          setAuthState(status.authenticated ? 'authenticated' : 'unauthenticated');
+          if (!status.authenticated) setForceShowIntro(true);
       };
-
-      checkExpiry(); // Kiểm tra ngay lập tức (phòng trường hợp mount sau khi đã hết hạn)
-
-      const intervalId = setInterval(checkExpiry, 30000);
-
+      void checkServerSession();
+      const intervalId = setInterval(() => { void checkServerSession(); }, 30000);
       const handleVisibility = () => {
-          if (document.visibilityState === 'visible') checkExpiry();
+          if (document.visibilityState === 'visible') void checkServerSession();
       };
       document.addEventListener('visibilitychange', handleVisibility);
-
       return () => {
+          active = false;
           clearInterval(intervalId);
           document.removeEventListener('visibilitychange', handleVisibility);
       };
   }, []);
 
-  if (!hasSeenIntro || forceShowIntro) {
+  const handleLogout = async () => {
+      await logoutServerSession();
+      setAuthState('unauthenticated');
+      setForceShowIntro(true);
+  };
+
+  if (authState === 'checking') {
+      return <div className="h-screen w-full flex flex-col items-center justify-center bg-zinc-950 text-zinc-300"><Loader2 className="w-10 h-10 animate-spin mb-4" /><p>Đang xác thực phiên máy chủ...</p></div>;
+  }
+
+  if (authState !== 'authenticated' || forceShowIntro) {
       return <IntroPage onEnter={() => {
-          setHasSeenIntro(true);
+          setAuthState('authenticated');
           setForceShowIntro(false);
       }} />;
   }
@@ -661,6 +665,7 @@ const App: React.FC = () => {
 
         onShowChangelog={() => ui.setShowChangelog(true)}
         onShowIntro={() => setForceShowIntro(true)}
+        onLogout={() => { void handleLogout(); }}
         startTime={engine.startTime}
         setStartTime={engine.setStartTime}
         endTime={engine.endTime}

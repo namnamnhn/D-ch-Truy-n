@@ -3,7 +3,7 @@ import { createReadStream } from 'node:fs';
 import { cp, stat } from 'node:fs/promises';
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
-import { providerGatewayPlugin } from './server/providerGateway';
+import { createViteSecurityPlugins } from './server/viteSecurityPlugins';
 
 const PDFJS_ASSET_ROUTE = '/pdfjs-assets/';
 const PDFJS_ASSET_DIRECTORIES = ['cmaps', 'iccs', 'standard_fonts', 'wasm'] as const;
@@ -98,7 +98,11 @@ export default defineConfig(() => {
           target: 'esnext'
         }
       },
-      plugins: [react(), providerGatewayPlugin(), pdfjsLocalAssets()],
+      plugins: [
+        react(),
+        ...createViteSecurityPlugins(process.env),
+        pdfjsLocalAssets(),
+      ],
       resolve: {
         alias: {
           '@': path.resolve(__dirname, './src'),

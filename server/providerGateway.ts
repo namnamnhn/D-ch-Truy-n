@@ -370,8 +370,8 @@ export function createProviderRequestHandler(options: ProviderHttpHandlerOptions
   };
 }
 
-export function providerGatewayPlugin(): Plugin {
-  const handleRequest = createProviderRequestHandler();
+export function providerGatewayPlugin(options: ProviderHttpHandlerOptions = {}): Plugin {
+  const handleRequest = createProviderRequestHandler(options);
   const install = (middlewares: { use: (fn: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, next: () => void) => void) => void }) => {
     middlewares.use(async (request, response, next) => {
       const pathname = (request.url || '').split('?')[0];

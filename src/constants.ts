@@ -1,5 +1,12 @@
 
 import { ModelQuota } from './types';
+import {
+  DECLARED_EDITION,
+  evaluateEditionEntitlement,
+  type AppEdition,
+} from '../shared/editionContract';
+
+export type { AppEdition } from '../shared/editionContract';
 
 // Export everything from the new split files
 export * from './prompts';
@@ -13,12 +20,11 @@ export * from './defaultDictionary';
 //            config (3 tệp / latin 60k / raw 30k), ẩn prompt gốc, lấy mẫu phân tích
 //            cố định đầu/giữa/cuối tối đa 200k ký tự, BẮT BUỘC API key Gemini cá
 //            nhân (không dùng key nhúng), hạn sử dụng chỉ mở ngày 1-3 hàng tháng.
-// Bản Lite được tạo bằng cách swap đúng 3 file edition (index.html,
-// metadata.json, src/constants.ts) — giống hệt cơ chế 6Thang/1Nam hiện có, nên
+// Bản Lite được tạo bằng cách swap metadata/index và khai báo công khai trong
+// shared/editionContract.ts — server và client cùng đọc một contract, nên
 // mọi chỗ khác trong code chỉ được rẽ nhánh qua IS_LITE bên dưới.
 // ============================================================================
-export type AppEdition = 'full' | 'lite';
-export const APP_EDITION = 'full' as AppEdition;
+export const APP_EDITION = DECLARED_EDITION.edition as AppEdition;
 export const IS_LITE: boolean = APP_EDITION === 'lite';
 
 // Cấu hình khoá cứng của bản Lite (batch size / giới hạn ký tự mỗi batch dịch)
@@ -28,31 +34,16 @@ export const LITE_BATCH_CONFIG = {
     COMPLEX_MAX_CHARS: 30000,
 };
 
-// Hạn sử dụng hợp nhất: Full theo EXPIRY_TS; Lite chỉ mở ngày 1-3 hàng tháng.
+// Chỉ dùng cho hiển thị phía client. Server đánh giá lại cùng declaration và là authority.
 export const isWithinLicense = (): boolean => {
-    if (IS_LITE) {
-        const day = new Date().getDate();
-        return day >= 1 && day <= 3;
-    }
-    return !ACCESS_CONFIG.EXPIRY_TS || Date.now() <= ACCESS_CONFIG.EXPIRY_TS;
+    return evaluateEditionEntitlement(DECLARED_EDITION).valid;
 };
 
-// Cấu hình truy cập ứng dụng (Intro Page)
-// Bạn có thể chỉnh sửa mã code và thời hạn ở đây cho tiện dụng
+// Metadata công khai cho UI. Không chứa secret hoặc bằng chứng authorization.
 export const ACCESS_CONFIG = {
-  // Bật/tắt tính năng yêu cầu nhập code bảo vệ ở màn hình Intro
-  REQUIRE_CODE: true,
-
-  // Hash SHA-256 của mật khẩu (hex) — không thể đảo ngược thành plaintext
-  PASSWORD_HASH: '2cdeb943ec144a3d96f66f6049f471e16360af2f92cf3e6d56d2fa049158765a',
-
-  // Expiry dạng timestamp UTC (Unix timestamp ms của ngày hết hạn)
-  EXPIRY_TS: 1801414740000, // 2027-01-31T23:59:00+07:00
-
-  // Nhãn gói bản quyền, chỉ khác nhau giữa các bản đóng gói (6 Tháng / 1 Năm /
-  // Lite), hiển thị cạnh tên app ở Header và IntroPage để người dùng biết đang
-  // dùng gói nào.
-  EDITION: '6 Tháng'
+  REQUIRE_CODE: DECLARED_EDITION.requireCode,
+  EXPIRY_TS: DECLARED_EDITION.fullExpiryAt,
+  EDITION: DECLARED_EDITION.label,
 };
 
 // UPDATED v11.3.6: Adjusted RPD Limits to hard limits based on user feedback

@@ -88,6 +88,7 @@ export const MainUI: React.FC<MainUIProps> = (props) => {
                     setShowSettings={props.setShowSettings}
                     onShowChangelog={props.onShowChangelog}
                     onShowIntro={props.onShowIntro}
+                    onLogout={props.onLogout}
                     enabledModels={props.enabledModels}
                     modelConfigs={props.modelConfigs}
                     modelUsages={props.modelUsages}
