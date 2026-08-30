@@ -2,7 +2,7 @@
 
 > Historical record: the access-code/session implementation described below was retired in the private AI Studio deployment redesign. Current deployment guidance is [README.md](README.md) and [docs/provider-routing.md](docs/provider-routing.md): there are no `/api/auth/*` routes, `APP_ACCESS_CODE_HASH`, or `SESSION_SIGNING_SECRET` requirements. A future public deployment requires real authentication and abuse controls.
 
-> Current multi-profile release status (2026-08-30): local code, regression, build, credential-boundary, PDF, and production-server gates pass. Real AI Studio deployment/profile/stream/Story Chapters 1–2 acceptance is still pending and is not claimed by the historical evidence below.
+> Current multi-profile release status (2026-08-30): local code, regression, build, credential-boundary, PDF, and production-server gates pass (26 files / 389 tests). Real AI Studio now passes direct entry, private runtime activation, masked default-profile discovery, and an ordinary `gemini-3.5-flash` call; `gemini-3.1-pro-preview` rate limiting is reported as temporary rather than falsely called daily exhaustion. Multi-profile failover, streaming, and Story Chapters 1–2 acceptance remain pending until a second owner Gemini Secret is registered; they are not claimed by the historical evidence below.
 
 ## Candidate
 
