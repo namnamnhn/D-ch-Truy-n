@@ -137,7 +137,7 @@ describe('WP-FIN-03 stateless server access authority', () => {
 
     expect(result.response).toMatchObject({ authenticated: true, status: 'AUTHENTICATED' });
     expect(result.response.sessionExpiresAt).toBe(now + expectedTtl * 1000);
-    expect(result.cookie).toContain(`Max-Age=${expectedTtl}`);
+    expect(result.cookie?.join('; ')).toContain(`Max-Age=${expectedTtl}`);
   });
 
   it.each([

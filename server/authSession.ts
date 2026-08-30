@@ -21,6 +21,7 @@ import {
 } from '../shared/editionContract';
 
 const SESSION_COOKIE = 'app_session';
+const PREVIEW_SESSION_COOKIE = '__Host-app_session_preview';
 const MAX_SESSION_TTL_SECONDS = 8 * 60 * 60;
 const DEFAULT_SESSION_TTL_SECONDS = MAX_SESSION_TTL_SECONDS;
 const MAX_AUTH_BODY_BYTES = 4 * 1024;
@@ -182,7 +183,8 @@ export class AuthSessionAuthority {
     if (!entitlement.valid) {
       return { response: responseFor('ENTITLEMENT_EXPIRED', entitlement, this.edition.requireCode) };
     }
-    const cookie = parseCookies(request).get(SESSION_COOKIE);
+    const cookies = parseCookies(request);
+    const cookie = cookies.get(SESSION_COOKIE) || cookies.get(PREVIEW_SESSION_COOKIE);
     if (!cookie) return { response: responseFor('AUTH_REQUIRED', entitlement, this.edition.requireCode) };
     const decoded = this.decodeSession(cookie, this.getSigningSecret()!);
     if (decoded.expired) {
@@ -230,7 +232,7 @@ export class AuthSessionAuthority {
     if (this.loginAttempts.size > 1_000) this.loginAttempts.delete(this.loginAttempts.keys().next().value!);
   }
 
-  login(request: IncomingMessage, code: string): { response: AuthStatusResponse; cookie?: string } {
+  login(request: IncomingMessage, code: string): { response: AuthStatusResponse; cookie?: string[] } {
     const entitlement = this.getEntitlement();
     if (!this.isConfigured()) {
       return { response: responseFor('AUTH_NOT_CONFIGURED', entitlement, this.edition.requireCode) };
@@ -258,11 +260,11 @@ export class AuthSessionAuthority {
     const value = this.encodeSession(claims, this.getSigningSecret()!);
     return {
       response: responseFor('AUTHENTICATED', entitlement, this.edition.requireCode, expiresAt),
-      cookie: this.sessionCookie(value, expiresAt),
+      cookie: this.sessionCookies(request, value, expiresAt),
     };
   }
 
-  private sessionCookie(value: string, expiresAt: number): string {
+  private sessionCookies(request: IncomingMessage, value: string, expiresAt: number): string[] {
     const maxAge = Math.max(0, Math.floor((expiresAt - this.now()) / 1000));
     const attributes = [
       `${SESSION_COOKIE}=${value}`,
@@ -273,11 +275,24 @@ export class AuthSessionAuthority {
       `Expires=${new Date(expiresAt).toUTCString()}`,
     ];
     if (this.env.NODE_ENV === 'production') attributes.push('Secure');
-    return attributes.join('; ');
+    const cookies = [attributes.join('; ')];
+    if (isEmbeddedProxyRequest(request)) {
+      cookies.push([
+        `${PREVIEW_SESSION_COOKIE}=${value}`,
+        'HttpOnly',
+        'SameSite=None',
+        'Secure',
+        'Partitioned',
+        'Path=/',
+        `Max-Age=${maxAge}`,
+        `Expires=${new Date(expiresAt).toUTCString()}`,
+      ].join('; '));
+    }
+    return cookies;
   }
 
-  clearCookie(): string {
-    const attributes = [
+  clearCookie(): string[] {
+    const strictCookie = [
       `${SESSION_COOKIE}=`,
       'HttpOnly',
       'SameSite=Strict',
@@ -285,8 +300,20 @@ export class AuthSessionAuthority {
       'Max-Age=0',
       'Expires=Thu, 01 Jan 1970 00:00:00 GMT',
     ];
-    if (this.env.NODE_ENV === 'production') attributes.push('Secure');
-    return attributes.join('; ');
+    if (this.env.NODE_ENV === 'production') strictCookie.push('Secure');
+    return [
+      strictCookie.join('; '),
+      [
+        `${PREVIEW_SESSION_COOKIE}=`,
+        'HttpOnly',
+        'SameSite=None',
+        'Secure',
+        'Partitioned',
+        'Path=/',
+        'Max-Age=0',
+        'Expires=Thu, 01 Jan 1970 00:00:00 GMT',
+      ].join('; '),
+    ];
   }
 }
 
@@ -305,7 +332,7 @@ const authStatusCode = (response: AuthStatusResponse): number => ({
 const writeAuthResponse = (
   response: ServerResponse,
   body: AuthStatusResponse,
-  cookie?: string,
+  cookie?: string | string[],
   statusOverride?: number,
 ): void => {
   response.statusCode = statusOverride ?? authStatusCode(body);
@@ -316,6 +343,17 @@ const writeAuthResponse = (
   response.setHeader('Referrer-Policy', 'no-referrer');
   if (cookie) response.setHeader('Set-Cookie', cookie);
   response.end(JSON.stringify(body));
+};
+
+const isEmbeddedProxyRequest = (request: IncomingMessage): boolean => {
+  if (request.headers['sec-fetch-site'] !== 'same-origin') return false;
+  const origin = request.headers.origin;
+  if (!origin || !request.headers.host) return false;
+  try {
+    return new URL(origin).host !== request.headers.host;
+  } catch {
+    return false;
+  }
 };
 
 const isSameOriginRequest = (request: IncomingMessage): boolean => {

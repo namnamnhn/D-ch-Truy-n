@@ -138,6 +138,23 @@ describe('Google AI Studio Preview server adapter', () => {
       authenticated: true,
       status: 'AUTHENTICATED',
     });
+    const setCookie = proxiedSameOriginLogin.headers.get('set-cookie') || '';
+    expect(setCookie).toContain('app_session=');
+    expect(setCookie).toContain('SameSite=Strict');
+    expect(setCookie).toContain('__Host-app_session_preview=');
+    expect(setCookie).toContain('SameSite=None');
+    expect(setCookie).toContain('Secure');
+    expect(setCookie).toContain('Partitioned');
+
+    const previewCookie = setCookie.match(/__Host-app_session_preview=([^;,]+)/)?.[1];
+    expect(previewCookie).toBeTruthy();
+    const authenticatedViaPartitionedCookie = await fetch(`${origin}/api/auth/status`, {
+      headers: { Cookie: `__Host-app_session_preview=${previewCookie}` },
+    });
+    expect(await authenticatedViaPartitionedCookie.json() as AuthStatusResponse).toMatchObject({
+      authenticated: true,
+      status: 'AUTHENTICATED',
+    });
 
     const crossSiteLogin = await fetch(`${origin}/api/auth/login`, {
       method: 'POST',
@@ -153,5 +170,14 @@ describe('Google AI Studio Preview server adapter', () => {
       authenticated: false,
       status: 'UNAUTHORIZED_REQUEST',
     });
+
+    const logout = await fetch(`${origin}/api/auth/logout`, {
+      method: 'POST',
+      headers: { 'Sec-Fetch-Site': 'same-origin' },
+    });
+    const clearedCookies = logout.headers.get('set-cookie') || '';
+    expect(clearedCookies).toContain('app_session=');
+    expect(clearedCookies).toContain('__Host-app_session_preview=');
+    expect(clearedCookies).toContain('Max-Age=0');
   });
 });
