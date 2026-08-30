@@ -16,7 +16,8 @@ const maskKey = (key: string): string => key.length > 8 ? `${key.slice(0, 4)}…
 const safeFailureDetail = (error: any): string => {
     const message = String(error?.message || error || '').toLowerCase();
     if (error?.code === 'SERVER_CONFIGURATION_MISSING') return error.message;
-    if (error?.code === 'RATE_LIMITED' || /quota|exhausted|429|rate.?limit/.test(message)) return 'Hết quota / rate-limit';
+    if (error?.code === 'QUOTA_EXHAUSTED') return 'Hạn mức ngày của model đã hết';
+    if (error?.code === 'RATE_LIMITED' || /quota|exhausted|429|rate.?limit/.test(message)) return 'Đang bị giới hạn tốc độ; chưa xác định hết hạn mức ngày';
     if (error?.code === 'PROVIDER_UNAVAILABLE') return 'Provider/model tạm không khả dụng';
     if (/api key not valid|api_key_invalid/.test(message)) return 'API Key không hợp lệ';
     if (/failed to fetch|network|cannot reach/.test(message)) return 'Lỗi mạng hoặc gateway cùng origin';

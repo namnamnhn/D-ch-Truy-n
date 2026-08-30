@@ -95,4 +95,15 @@ describe('GeminiScheduler', () => {
     expect(calls).toBe(1);
     expect(quotaManager.isModelDepleted(model)).toBe(false);
   });
+
+  it('never infers daily depletion from a repeated or ambiguous raw 429', async () => {
+    quotaManager.clearUsage();
+    const logs: string[] = [];
+    await expect(smartExecution([model], async () => {
+      throw Object.assign(new Error('429 RESOURCE_EXHAUSTED'), { status: 429 });
+    }, 'legacy-429', message => logs.push(message))).rejects.toThrow();
+    expect(quotaManager.isModelDepleted(model)).toBe(false);
+    expect(logs.join('\n')).toContain('chưa đánh dấu hết quota ngày');
+    expect(logs.join('\n')).not.toContain('xác nhận đã hết Quota');
+  });
 });

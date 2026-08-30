@@ -341,7 +341,7 @@ describe('Story Engine Task 2 - context isolation and planning contracts', () =>
       }
     });
     await started; aborter.abort();
-    const result = await pending;
-    expect(result.success).toBe(false); expect(result.acceptedChapters).toEqual([]); expect(state.currentChapter).toBe(0);
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(state.currentChapter).toBe(0);
   });
 });

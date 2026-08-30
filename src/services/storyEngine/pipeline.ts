@@ -65,6 +65,8 @@ export interface PipelineResult {
 
 const abortError = () => Object.assign(new Error('Story generation was cancelled.'), { name: 'AbortError' });
 const throwIfAborted = (signal?: AbortSignal) => { if (signal?.aborted) throw abortError(); };
+const isAbortError = (error: unknown) => (error as { name?: string })?.name === 'AbortError'
+  || /abort|cancel/i.test(error instanceof Error ? error.message : String(error));
 
 /** Reject torn canon before a single model request. Empty/fresh and legacy-compatible tuples remain valid. */
 export function validateStoryPipelineBaseline(
@@ -318,6 +320,7 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
     const segments = splitChaptersByArc(control, requested);
     onLog(`[Pipeline] Arc segments: ${segments.map(segment => `${segment.arc.id}[${segment.chapterNumbers.join(',')}]`).join(' | ')}`);
   } catch (error) {
+    if (isAbortError(error)) throw error;
     const message = error instanceof Error ? error.message : String(error);
     return failResult(message, nextChapter, control, currentState, bible, batchPlan);
   }
@@ -336,6 +339,7 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
     }
     batchPlan = mergePlans(plans, requested);
   } catch (error) {
+    if (isAbortError(error)) throw error;
     const message = error instanceof Error ? error.message : String(error);
     reportProgress('failed', message, 100);
     return failResult(message, nextChapter, control, currentState, bible, batchPlan);
@@ -378,6 +382,7 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
       continuityLock = extendInBatchContinuityLock(continuityLock, result.chapters[0], chapterPlan.chapters[0]);
     }
   } catch (error) {
+    if (isAbortError(error)) throw error;
     const message = error instanceof Error ? error.message : String(error);
     reportProgress('failed', message, 100);
     return failResult(message, nextChapter, control, currentState, bible, batchPlan);
@@ -440,6 +445,7 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
         generatedChapters[index] = repaired.chapters[0];
         rawOutputs.set(chapter, repaired.rawOutput);
       } catch (error) {
+        if (isAbortError(error)) throw error;
         repairFailed = true;
         onLog(`[Semantic Repair] attempt=${repairCount} chapter=${chapter} output=invalid error=${error instanceof Error ? error.name : 'Error'}`);
       }
@@ -469,7 +475,8 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
       nextChapter,
       (prompt, sys) => roleRunner('STATE_EXTRACTOR')(prompt, sys)
     );
-  } catch {
+  } catch (error) {
+    if (isAbortError(error)) throw error;
     const message = 'Không thể tích hợp trạng thái an toàn; toàn bộ batch đã bị hủy.';
     reportProgress('failed', message, 100);
     onLog(`[Pipeline] Critical state integration failed; discarded chapters=[${requested.join(',')}].`);

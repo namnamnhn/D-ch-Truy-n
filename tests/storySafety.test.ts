@@ -59,6 +59,19 @@ describe('Story safety regressions', () => {
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
   });
 
+  it('rejects an invalid state-extractor root instead of advancing chapter state', async () => {
+    const bible: any = { seedTitle: 'Test', genre: 'Mystery', seriesPremise: 'P', continuitySummary: '', worldNotes: '', charNotes: '', outline: '', characters: [], totalPlannedChapters: 2 };
+    const control = createDeterministicStoryControl(bible, 'hash', 2);
+    const previous: any = {
+      schemaVersion: 3, sourceHash: 'hash', currentChapter: 0, characterStates: {}, relationships: [], resources: {}, clues: [], unresolvedThreads: [], longTermSeeds: [], recentConsequences: [], currentArcId: control.arcs[0].id, currentArcProgress: 0, unlockedCharacterIds: [], worldFactStates: {}, knowledgeLedger: [], timeline: [], continuitySummary: '', consequences: [],
+    };
+    await expect(extractAndMergeState(
+      [{ id: '1', chapterNumber: 1, title: 'One', content: 'Text', status: 'completed' }],
+      previous, control, [], '', 1, async () => 'not-json',
+    )).rejects.toThrow('STATE_DELTA_INVALID');
+    expect(previous.currentChapter).toBe(0);
+  });
+
   it('bounds semantic plan validation and aborts the in-flight target', async () => {
     let targetSignal: AbortSignal | undefined;
     const pending = validateBatchPlanSemantically({} as any, {} as any, {} as any, async (_prompt, _system, signal) => {

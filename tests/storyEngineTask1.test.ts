@@ -350,12 +350,10 @@ describe('Story Engine Task 1 - V3 import and data integrity', () => {
     expect(result.nextState.currentChapter).toBe(1);
   });
 
-  test('23. invalid State Extractor JSON uses safe empty fallback', async () => {
+  test('23. invalid State Extractor JSON fails closed instead of advancing canon', async () => {
     const parsed = parseStateDeltaResponse('not-json');
     expect(parsed.usedFallback).toBe(true);
-    const result = await runExtractor('not-json');
-    expect(result.nextState.unresolvedThreads).toEqual(['Vấn đề cũ']);
-    expect(result.newCharacters).toEqual([]);
+    await expect(runExtractor('not-json')).rejects.toThrow('STATE_DELTA_INVALID');
   });
 
   test('24. malformed optional nested delta preserves valid previous state', async () => {

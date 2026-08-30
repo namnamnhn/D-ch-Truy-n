@@ -675,7 +675,10 @@ export async function extractAndMergeState(
     } catch (error) {
       if ((error as { name?: string })?.name === 'AbortError' || /abort|cancel/i.test(error instanceof Error ? error.message : String(error))) throw error;
       const detail = error instanceof Error ? error.message : String(error);
-      parseResult = { delta: emptyStateDelta(), warnings: [`State Extractor runner lỗi: ${detail}`], usedFallback: true };
+      throw new Error(`STATE_DELTA_INVALID: State Extractor runner lỗi: ${detail}`, { cause: error });
+    }
+    if (parseResult.usedFallback) {
+      throw new Error(`STATE_DELTA_INVALID: ${parseResult.warnings.join(' ') || 'State Extractor không trả về JSON object hợp lệ.'}`);
     }
   }
   if (parseResult.warnings.length) {

@@ -32,8 +32,9 @@ export const testCurrentKey = async (): Promise<{ success: boolean; message: str
         return { success: true, message: "Gemini server-side đã cấu hình và đang hoạt động." };
     } catch (error: any) {
         const msg = (error.message || error.toString()).toLowerCase();
-        if (msg.includes("resource exhausted") || msg.includes("quota")) {
-            return { success: false, message: "Key này đã hết Quota (Resource Exhausted)." };
+        if (error.code === 'QUOTA_EXHAUSTED') return { success: false, message: "Hạn mức ngày của model đã hết trên các Gemini profile đủ điều kiện." };
+        if (error.code === 'RATE_LIMITED' || msg.includes('429') || msg.includes('resource exhausted') || msg.includes('quota')) {
+            return { success: false, message: "Gemini đang giới hạn tốc độ tạm thời; chưa thể kết luận đã hết hạn mức ngày." };
         }
         if (error.code === 'SERVER_CONFIGURATION_MISSING') {
             return { success: false, message: "Thiếu GEMINI_API_KEY phía server. Hãy cấu hình trong AI Studio Settings > Secrets." };
@@ -56,9 +57,9 @@ export const testModelConnection = async (modelId: string): Promise<{ success: b
         return response ? { success: true, message: "Kết nối thành công! Model sẵn sàng." } : { success: false, message: "Không có phản hồi." };
     } catch (error: any) {
         const msg = (error.message || error.toString()).toLowerCase();
-        if (msg.includes("resource exhausted") || msg.includes("quota")) {
-            quotaManager.markAsDepleted(modelId);
-            return { success: false, message: "Model đã hết Quota (Resource Exhausted)." };
+        if (error.code === 'QUOTA_EXHAUSTED') return { success: false, message: "Hạn mức ngày của model đã hết trên profile này." };
+        if (error.code === 'RATE_LIMITED' || msg.includes('429') || msg.includes('resource exhausted') || msg.includes('quota')) {
+            return { success: false, message: "Model đang bị giới hạn tốc độ tạm thời; hãy thử lại sau." };
         }
         return { success: false, message: error.message };
     }
@@ -297,66 +298,30 @@ export const smartExecution = async <T>(
             }
             
             if (isQuotaError) {
-                // We no longer strictly isolate 'per day' strings to immediately deplete the model
-                // because Google often returns 'GenerateRequestsPerDayPerProjectPerModel' even for rate limits.
-                // It will go through the normal 429 retry logic below.
-                
+                // This is a legacy/raw error path. The same-origin gateway is the
+                // sole authority allowed to classify QUOTA_EXHAUSTED because it
+                // owns the profile + quota-group + model state. A bare 429 here
+                // can be RPM/TPM/burst pressure and must never become a daily
+                // depletion merely because it repeated several times.
                 quotaManager.recordQuotaError(selectedId);
                 const usage = quotaManager.getModelUsage(selectedId);
-                const quotaErrorCount = usage.consecutiveQuotaErrors || 0;
-                
+                const quotaErrorCount = usage.consecutiveQuotaErrors || 1;
+
                 // Check hard request limit from config
                 const modelConfig = quotaManager.getConfigs().find((m: any) => m.id === selectedId);
                 const isHardLimitReached = modelConfig && usage.requestsToday >= modelConfig.rpdLimit;
 
                 if (isHardLimitReached) {
-                    if (onLog) onLog(`⛔ CƯỠNG CHẾ HẾT QUOTA: Model ${selectedId} đã chạm ngưỡng giới hạn request cứng (${usage.requestsToday}/${modelConfig.rpdLimit}).`);
+                    if (onLog) onLog(`⏸️ Model ${selectedId} đã đạt ngân sách request nội bộ đã cấu hình (${usage.requestsToday}/${modelConfig.rpdLimit}); chuyển sang lựa chọn khác.`);
                     quotaManager.markAsDepleted(selectedId);
                     temporaryBlacklist.push(selectedId);
                     continue;
                 }
-
-                // FIX51 (giữ nguyên tinh thần): KHÔNG markAsDepleted() (isDepleted=true vĩnh viễn
-                // tới hết ngày) chỉ vì vài lần 429 dồn dập — con số đó rất dễ chỉ là burst
-                // rate-limit (RPM) tạm thời, không phải thật sự cạn Quota ngày (RPD).
-                //
-                // FIX53 (bản này): fix51/52 sau khi bỏ markAsDepleted() ở nhánh này lại vô tình
-                // tạo ra vòng lặp VÔ HẠN — mỗi lần cooldown 10 phút hết hạn, hệ thống tự thử lại,
-                // vẫn dính 429 (vì Quota ngày thật sự đã cạn), quotaErrorCount lại tăng thêm 1
-                // (3 -> 4 -> 5 -> 6...) rồi lại cooldown tiếp 10 phút — cứ thế lặp mãi, KHÔNG BAO
-                // GIỜ chính thức báo "hết Quota" để dừng hẳn (bằng chứng: nhật ký lỗi người dùng
-                // cung cấp cho thấy chuỗi "liên tục 3 lần" -> "4 lần" -> "5 lần" -> "6 lần" cách
-                // nhau đúng ~10 phút, kéo dài nhiều giờ không dứt).
-                //
-                // SỬA: thêm bậc thang rõ ràng, có điểm dừng thật:
-                //  - Lần 1/2/3 (quotaErrorCount 1-3): thử nhanh ngay, đợi 5s / 10s / 15s.
-                //  - Lần 4: coi là "khá chắc bị rate-limit nặng" -> tạm nghỉ 1 phút (giảm từ 10
-                //    phút, sau đó giảm tiếp từ 5 phút xuống 1 phút theo yêu cầu người dùng) rồi để
-                //    hệ thống tự thử lại — CHƯA kết luận hết Quota thật.
-                //  - Lần 5 trở đi (tức là SAU KHI đã nghỉ 1 phút rồi thử lại mà VẪN dính 429):
-                //    đây mới là bằng chứng đủ mạnh -> chính thức markAsDepleted() (isDepleted=true
-                //    tới hết ngày) và dừng hẳn model này, không lặp cooldown vô hạn nữa.
-                if (quotaErrorCount >= 5) {
-                     if (onLog) onLog(`⛔ Model ${selectedId} vẫn báo lỗi Quota (429) sau khi đã tạm nghỉ 1 phút rồi thử lại — xác nhận đã hết Quota thực sự, dừng model này.`);
-                     quotaManager.markAsDepleted(selectedId);
-                     temporaryBlacklist.push(selectedId);
-                     continue;
-                } else if (quotaErrorCount === 4) {
-                     if (onLog) onLog(`⏸️ Model ${selectedId} báo lỗi Quota (429) liên tục ${quotaErrorCount} lần — tạm nghỉ 1 phút rồi tự thử lại (nếu vẫn lỗi sau đó mới chính thức xác nhận hết Quota), các model/tệp khác vẫn tiếp tục...`);
-                     quotaManager.recordRateLimit(selectedId, 60000);
-                     temporaryBlacklist.push(selectedId);
-                     continue;
-                } else {
-                     let waitTimeSeconds = 5;
-                     if (quotaErrorCount === 2) waitTimeSeconds = 10;
-                     else if (quotaErrorCount === 3) waitTimeSeconds = 15;
-
-                     const waitTime = waitTimeSeconds * 1000;
-                     if (onLog) onLog(`⚠️ Model ${selectedId} dính Quota/Rate limit (429). Lần ${quotaErrorCount}, thử lại sau ${waitTimeSeconds}s...`);
-                     quotaManager.recordRateLimit(selectedId, waitTime);
-                     await new Promise(r => setTimeout(r, waitTime));
-                     continue;
-                }
+                const cooldownMs = Math.min(60_000, 5_000 * Math.max(1, quotaErrorCount));
+                quotaManager.recordRateLimit(selectedId, cooldownMs);
+                temporaryBlacklist.push(selectedId);
+                if (onLog) onLog(`⏸️ ${selectedId} nhận 429 chưa xác định (có thể RPM/TPM/burst). Tạm chờ ${Math.ceil(cooldownMs / 1000)} giây và chuyển sang model khác; chưa đánh dấu hết quota ngày.`);
+                continue;
             }
 
             if (error.status === 400 || msg.includes('400')) {
@@ -382,8 +347,7 @@ export const smartExecution = async <T>(
             }
 
             if (error.status === 403 || msg.includes('403') || msg.includes('permission_denied')) {
-                if (onLog) onLog(`⛔ CẢNH BÁO 403 FORBIDDEN trên model ${selectedId}: API Key hiện tại không có quyền truy cập.`);
-                quotaManager.markAsDepleted(selectedId);
+                if (onLog) onLog(`⛔ ${selectedId} không khả dụng với cấu hình/quyền hiện tại; đây không phải kết luận hết quota.`);
                 temporaryBlacklist.push(selectedId);
                 continue;
             }
@@ -404,13 +368,6 @@ export const smartExecution = async <T>(
             const usage = quotaManager.getModelUsage(selectedId);
             const errorCount = usage.consecutiveErrors || 0;
             const maxRetries = 3;
-            const hardErrorLimit = selectedId.includes("pro") ? 25 : 105;
-            if (errorCount >= hardErrorLimit) {
-                if (onLog) onLog(`⛔ CƯỠNG CHẾ HẾT QUOTA: Model ${selectedId} lỗi liên tiếp ${errorCount} lần. Đánh dấu hết Quota!`);
-                quotaManager.markAsDepleted(selectedId);
-                temporaryBlacklist.push(selectedId);
-                continue;
-            }
 
             if (errorCount <= maxRetries) {
                 // STRIKE: Exponential Backoff (2s, 4s, 8s)

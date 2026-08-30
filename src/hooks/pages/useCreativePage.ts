@@ -339,18 +339,14 @@ ${textContent}`,
             };
 
             const compiled = await compileStoryControl(bible, async (prompt) => {
-                return smartExecution(
-                    [...getStoryModelCandidates('STORY_CONTROL_COMPILER', IS_LITE)],
-                    async (modelId) => {
-                        const r = await ai.models.generateContent({
-                            model: modelId,
-                            contents: prompt,
-                            config: { safetySettings: SAFETY_SETTINGS, temperature: 0.2 }
-                        });
-                        return r.text || '';
-                    },
-                    'Biên dịch Story Control', addLog
-                );
+                const candidates = [...getStoryModelCandidates('STORY_CONTROL_COMPILER', IS_LITE)];
+                const r = await ai.models.generateContent({
+                    model: candidates[0],
+                    modelCandidates: candidates,
+                    contents: prompt,
+                    config: { safetySettings: SAFETY_SETTINGS, temperature: 0.2 }
+                });
+                return r.text || '';
             });
 
             const compatibleState = canReuseDerivedState(state.storyState, compiled.sourceHash) ? state.storyState : undefined;
@@ -445,33 +441,29 @@ ${textContent}`,
             const roleAwareRunner = async (role: StoryModelRole, prompt: string, sys?: string, attemptSignal?: AbortSignal) => {
                 const semanticRole = role === 'PLAN_VALIDATOR_SEMANTIC' || role === 'STORY_VALIDATOR_SEMANTIC';
                 const longFormRole = role === 'WRITER' || role === 'AUTO_REPAIR';
-                return smartExecution(
-                    [...getStoryModelCandidates(role, IS_LITE)],
-                    async (modelId) => {
-                        const r = await ai.models.generateContent({
-                            model: modelId,
-                            modelCandidates: [...getStoryModelCandidates(role, false)],
-                            contents: prompt,
-                            config: {
-                                systemInstruction: sys,
-                                safetySettings: SAFETY_SETTINGS,
-                                ...(supportsGeminiSamplingConfig(modelId) ? { temperature: semanticRole ? 0.1 : longFormRole ? 0.8 : 0.3 } : {}),
-                                ...(longFormRole ? { maxOutputTokens: 65536 } : {}),
-                                abortSignal: attemptSignal ? AbortSignal.any([controller.signal, attemptSignal]) : controller.signal
-                            }
-                        });
-                        const target = r.executionTarget;
-                        if (target) {
-                            const actual = getGeminiModel(target.model)?.label || target.model;
-                            const preferred = target.fallbackFrom ? (getGeminiModel(target.fallbackFrom)?.label || target.fallbackFrom) : undefined;
-                            addLog?.(preferred
-                                ? `[Story Engine ${role}] Đang dùng ${actual} qua ${target.profileLabel} vì không có nguồn ${preferred} khả dụng.`
-                                : `[Story Engine ${role}] ${actual} qua ${target.profileLabel}.`, 'info');
-                        }
-                        return r.text || '';
-                    },
-                    `Story Engine ${role}`, addLog
-                );
+                const candidates = [...getStoryModelCandidates(role, IS_LITE)];
+                const modelId = candidates[0];
+                const r = await ai.models.generateContent({
+                    model: modelId,
+                    modelCandidates: candidates,
+                    contents: prompt,
+                    config: {
+                        systemInstruction: sys,
+                        safetySettings: SAFETY_SETTINGS,
+                        ...(supportsGeminiSamplingConfig(modelId) ? { temperature: semanticRole ? 0.1 : longFormRole ? 0.8 : 0.3 } : {}),
+                        ...(longFormRole ? { maxOutputTokens: 65536 } : {}),
+                        abortSignal: attemptSignal ? AbortSignal.any([controller.signal, attemptSignal]) : controller.signal
+                    }
+                });
+                const target = r.executionTarget;
+                if (target) {
+                    const actual = getGeminiModel(target.model)?.label || target.model;
+                    const preferred = target.fallbackFrom ? (getGeminiModel(target.fallbackFrom)?.label || target.fallbackFrom) : undefined;
+                    addLog?.(preferred
+                        ? `[Story Engine ${role}] Đang dùng ${actual} qua ${target.profileLabel} vì không có nguồn ${preferred} khả dụng.`
+                        : `[Story Engine ${role}] ${actual} qua ${target.profileLabel}.`, 'info');
+                }
+                return r.text || '';
             };
 
             const result = await runStoryEnginePipeline({
