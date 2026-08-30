@@ -1,12 +1,20 @@
 # Project Control
 
+> Historical notes below predate the private AI Studio redesign. Current deployments use `APP_DEPLOYMENT_MODE=private-aistudio`, have no access-code/session routes, and fail closed outside private mode. See `README.md` and `docs/provider-routing.md`.
+
 ## Current Chairman Directive and Priority
 
 - Chairman: Nguyễn Hoàng Nam.
 - Current operating directive: full CEO handover dated 2026-08-30 (Asia/Saigon).
 - Immediate product priority: Story Creation, beginning with real Google AI Studio production of *THIÊN HẠ GIAN ĐẠO* under the frozen Story Engine V3 contract.
 - Historical WP-FIN packages remain evidence but are not an instruction to resume broad finalization work.
-- Current milestone order: healthy AI Studio Preview auth API; server-side secret configuration; provider verification; canonical V3 setup import and pacing verification; official Chapters 1–2 with QA/state/memory/atomic-save PASS.
+- Current milestone order: direct app entry; private-AI-Studio provider boundary; server-side Gemini profile Secrets; provider/failover verification; canonical V3 setup import and pacing verification; official Chapters 1–2 with QA/state/memory/atomic-save PASS.
+
+## Multi-Gemini implementation checkpoint — 2026-08-30
+
+- Local implementation and regression acceptance are complete on `codex/multi-gemini-story-routing`: direct entry, numbered server-only Gemini profiles, project/quota grouping, per-profile/model health, bounded Retry-After handling, role-aware Story routing, quality floor, streaming cancellation, and atomic Story canon safeguards.
+- Browser persistence is restricted to safe profile metadata (label, enabled state, disabled model IDs). Credential-looking labels are rejected, and Gemini credential material is absent from browser bundles, storage paths, exports, backups, and normalized logs.
+- Real AI Studio acceptance for this new build remains pending until the branch is integrated and the owner configures `APP_DEPLOYMENT_MODE=private-aistudio` plus at least one Gemini Secret. The older live-runtime evidence below is historical and must not be treated as acceptance of the new build.
 
 ## Google AI Studio Runtime Acceptance — PASS
 

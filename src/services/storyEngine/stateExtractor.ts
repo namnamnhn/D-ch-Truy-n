@@ -673,6 +673,7 @@ export async function extractAndMergeState(
     try {
       parseResult = parseStateDeltaResponse(await runner(prompt, sys));
     } catch (error) {
+      if ((error as { name?: string })?.name === 'AbortError' || /abort|cancel/i.test(error instanceof Error ? error.message : String(error))) throw error;
       const detail = error instanceof Error ? error.message : String(error);
       parseResult = { delta: emptyStateDelta(), warnings: [`State Extractor runner lỗi: ${detail}`], usedFallback: true };
     }

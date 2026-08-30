@@ -462,6 +462,9 @@ export interface StoryModelRoute {
   tier: StoryModelTier;
   requiredInStrictMode: boolean;
   allowFastFallback: boolean;
+  /** Explicitly exposes whether a role was intentionally degraded. */
+  qualityFloor: 'PRO' | 'FLASH';
+  degraded: boolean;
   status: 'available' | 'unavailable' | 'unknown';
 }
 

@@ -40,7 +40,9 @@ export interface PipelineOptions {
   aiFastRunner?: (prompt: string, sys?: string) => Promise<string>;
   aiProRunner?: (prompt: string, sys?: string) => Promise<string>;
   aiSemanticRunner?: (prompt: string, sys?: string) => Promise<string>;
-  aiRoleRunner?: (role: StoryModelRole, prompt: string, sys?: string) => Promise<string>;
+  aiRoleRunner?: (role: StoryModelRole, prompt: string, sys?: string, signal?: AbortSignal) => Promise<string>;
+  /** Cancellation is authoritative: no result can be accepted after it aborts. */
+  signal?: AbortSignal;
   storyModelAvailability?: Partial<Record<StoryModelTier, boolean>>;
   onProgress?: (info: PipelineProgressInfo | string, progressPercent?: number) => void;
   onLog?: (message: string) => void;
@@ -59,6 +61,35 @@ export interface PipelineResult {
   batchPlan: BatchPlan;
   repairCount: number;
   errorMessage?: string;
+}
+
+const abortError = () => Object.assign(new Error('Story generation was cancelled.'), { name: 'AbortError' });
+const throwIfAborted = (signal?: AbortSignal) => { if (signal?.aborted) throw abortError(); };
+
+/** Reject torn canon before a single model request. Empty/fresh and legacy-compatible tuples remain valid. */
+export function validateStoryPipelineBaseline(
+  chapters: CreativeChapter[], state: StoryState | undefined, memories: ChapterMemory[],
+): void {
+  // Pre-V3 imports did not persist chapterNumber; their array order is the
+  // canonical contiguous sequence until the next accepted commit writes IDs.
+  const numbers = chapters.map((chapter, index) => chapter.chapterNumber ?? index + 1);
+  if (numbers.some(number => !Number.isInteger(number)) || new Set(numbers).size !== numbers.length
+    || numbers.some((number, index) => number !== index + 1)) throw new Error('Story canon preflight failed: chapters must be unique and contiguous from chapter 1.');
+  const last = numbers.length;
+  if (state && state.currentChapter !== last) throw new Error('Story canon preflight failed: StoryState.currentChapter does not match committed chapters.');
+  const memoryIds = new Set<string>();
+  const memoryRanges = new Set<string>();
+  for (const memory of memories) {
+    const start = memory.chapterStart ?? memory.chapterNumber;
+    const end = memory.chapterEnd ?? memory.chapterNumber;
+    const range = `${start}:${end}`;
+    if (!memory.id || memoryIds.has(memory.id) || memoryRanges.has(range) || !Number.isInteger(start) || !Number.isInteger(end)
+      || start < 1 || end < start || end > last) {
+      throw new Error('Story canon preflight failed: memory index is duplicate, future, or malformed.');
+    }
+    memoryIds.add(memory.id);
+    memoryRanges.add(range);
+  }
 }
 
 export function canReuseStoryControl(control: StoryControl | undefined, expectedHash: string): control is StoryControl {
@@ -222,10 +253,13 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
     aiProRunner,
     aiSemanticRunner,
     aiRoleRunner,
+    signal,
     storyModelAvailability,
     onProgress = () => {},
     onLog = () => {}
   } = options;
+  throwIfAborted(signal);
+  validateStoryPipelineBaseline(existingChapters, existingState, existingMemories);
   const nextChapter = existingChapters.length + 1;
   const requested = Array.from({ length: batchSize }, (_, index) => nextChapter + index);
   const targetEndChapter = requested[requested.length - 1];
@@ -238,28 +272,30 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
     QUALITY: Boolean(aiRoleRunner || aiProRunner)
   };
   const qualityAvailable = availability.QUALITY === true;
-  const fastRunner = aiFastRunner || (async (prompt: string) => prompt);
+  const fastRunner = aiFastRunner || (async () => {
+    throw new Error('FAST runner is unavailable; prompt echo is prohibited.');
+  });
   const roleRunner = (role: StoryModelRole) => {
     const route = getStoryModelRoute(role, availability);
     onLog(`[ModelRouting] role=${role} tier=${route.tier} status=${route.status}`);
     if (aiRoleRunner && availability[route.tier] === true) {
-      return (prompt: string, sys?: string) => aiRoleRunner(role, prompt, sys);
+      return async (prompt: string, sys?: string, attemptSignal?: AbortSignal) => { throwIfAborted(signal); const value = await aiRoleRunner(role, prompt, sys, attemptSignal); throwIfAborted(signal); return value; };
     }
     if (route.tier === 'QUALITY') {
-      if (aiProRunner) return aiProRunner;
-      if (route.allowFastFallback && aiFastRunner) return aiFastRunner;
+      if (aiProRunner) return async (prompt: string, sys?: string) => { throwIfAborted(signal); const value = await aiProRunner(prompt, sys); throwIfAborted(signal); return value; };
+      if (route.allowFastFallback && aiFastRunner) return async (prompt: string, sys?: string) => { throwIfAborted(signal); const value = await aiFastRunner(prompt, sys); throwIfAborted(signal); return value; };
       throw new Error(`Required QUALITY runner is unavailable for ${role}; FAST fallback is not permitted.`);
     }
-    return fastRunner;
+    return async (prompt: string, sys?: string) => { throwIfAborted(signal); const value = await fastRunner(prompt, sys); throwIfAborted(signal); return value; };
   };
   const semanticRunner = aiSemanticRunner || qualityAvailable
-    ? (prompt: string, systemInstruction: string) => {
+    ? (prompt: string, systemInstruction: string, attemptSignal?: AbortSignal) => {
       if (aiSemanticRunner) {
         const route = getStoryModelRoute('STORY_VALIDATOR_SEMANTIC', { QUALITY: true });
         onLog(`[ModelRouting] role=${route.role} tier=${route.tier} status=${route.status}`);
-        return aiSemanticRunner(prompt, systemInstruction);
+        return Promise.resolve().then(async () => { throwIfAborted(signal); const value = await aiSemanticRunner(prompt, systemInstruction); throwIfAborted(signal); return value; });
       }
-      return roleRunner('STORY_VALIDATOR_SEMANTIC')(prompt, systemInstruction);
+      return roleRunner('STORY_VALIDATOR_SEMANTIC')(prompt, systemInstruction, attemptSignal);
     }
     : undefined;
 
@@ -293,8 +329,9 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
     for (const chapter of requested) {
       plans.push(await generateBatchPlan(
         bible, control, currentState, currentMemories, chapter, 1, existingChapters,
-        (prompt, sys) => roleRunner('PLANNER')(prompt, sys),
-        qualityAvailable ? (prompt, sys) => roleRunner('PLAN_VALIDATOR_SEMANTIC')(prompt, sys) : undefined
+        (prompt, sys, attemptSignal) => roleRunner('PLANNER')(prompt, sys, attemptSignal),
+        qualityAvailable ? (prompt, sys, attemptSignal) => roleRunner('PLAN_VALIDATOR_SEMANTIC')(prompt, sys, attemptSignal) : undefined,
+        signal
       ));
     }
     batchPlan = mergePlans(plans, requested);
@@ -353,7 +390,7 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
 
   reportProgress('validating', 'Hậu kiểm logic, continuity & pacing...', 75);
   let validationResult = await validateBatchOutput(
-    generatedChapters, batchPlan, control, currentState, bible, semanticRunner, existingChapters
+    generatedChapters, batchPlan, control, currentState, bible, semanticRunner, existingChapters, signal
   );
   logSemanticQaResult(validationResult, control, onLog);
   let repairCount = 0;
@@ -362,6 +399,7 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
     repairCount++;
     reportProgress('repairing', `Auto Repair lượt ${repairCount}/${maxRepairs}...`, 80 + repairCount * 5, repairCount);
     let repairFailed = false;
+    const repairSnapshot = [...generatedChapters];
     for (let index = 0; index < generatedChapters.length; index++) {
       const chapter = generatedChapters[index].chapterNumber || requested[index];
       const chapterViolations = validationResult.violations.filter(violation => {
@@ -406,9 +444,9 @@ export async function runStoryEnginePipeline(options: PipelineOptions): Promise<
         onLog(`[Semantic Repair] attempt=${repairCount} chapter=${chapter} output=invalid error=${error instanceof Error ? error.name : 'Error'}`);
       }
     }
-    if (repairFailed) continue;
+    if (repairFailed) { generatedChapters.splice(0, generatedChapters.length, ...repairSnapshot); continue; }
     validationResult = await validateBatchOutput(
-      generatedChapters, batchPlan, control, currentState, bible, semanticRunner, existingChapters
+      generatedChapters, batchPlan, control, currentState, bible, semanticRunner, existingChapters, signal
     );
     validationResult.repairAttempts = repairCount;
     logSemanticQaResult(validationResult, control, onLog, repairCount);

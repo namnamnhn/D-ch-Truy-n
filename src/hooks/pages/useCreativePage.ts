@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { getAiClient, smartExecution, SAFETY_SETTINGS } from '../../services/api/gemini';
+import { getGeminiModel, supportsGeminiSamplingConfig } from '../../../shared/geminiModelRegistry';
 import { CreativeState, Character, CreativeSnapshot } from '../../types';
 import { IS_LITE } from '../../constants';
 import {
@@ -64,6 +65,16 @@ function parseCreativeAnalysisResponse(raw: string): {
 
 export const parseSetupFile = parseSetupFileContent;
 
+/** Pure CAS predicate used by generation commit; testable without mounting React. */
+export const isCreativeCanonBaselineCurrent = (current: Pick<CreativeState, 'chapters' | 'storyControl' | 'storyState' | 'memoryIndex'>, baseline: Pick<CreativeState, 'chapters' | 'storyControl' | 'storyState' | 'memoryIndex'>) =>
+    current.chapters === baseline.chapters && current.storyControl === baseline.storyControl
+    && current.storyState === baseline.storyState && current.memoryIndex === baseline.memoryIndex;
+export const tryAcquireGenerationLock = (ref: { current: boolean }): boolean => {
+    if (ref.current) return false;
+    ref.current = true;
+    return true;
+};
+
 export interface UseCreativePageProps {
     addToast: (msg: string, type?: 'success' | 'error' | 'info' | 'warning') => void;
     state: CreativeState;
@@ -92,6 +103,9 @@ export const useCreativePage = ({
     const [isGenerating, setIsGenerating] = useState(false);
     const [engineProgress, setEngineProgress] = useState<EngineProgressInfo | null>(null);
     const abortControllerRef = useRef<AbortController | null>(null);
+    // React state updates are asynchronous; this ref closes the double-click / re-entry
+    // window so no concurrent pipeline can append duplicate chapters.
+    const generationLockRef = useRef(false);
 
     const handleStopGenerating = () => {
         if (abortControllerRef.current) {
@@ -374,6 +388,10 @@ ${textContent}`,
                 : 'Hãy chạy Kiểm Tra Engine và đạt READY trước khi bắt đầu.', 'error');
             return;
         }
+        if (!tryAcquireGenerationLock(generationLockRef)) {
+            addToast('Một lượt sáng tác đang chạy; không thể khởi động lượt đồng thời.', 'warning');
+            return;
+        }
         setIsGenerating(true);
         setEngineProgress({ stage: 'planning', message: 'Khởi động Long-Form Story Engine V3...', progress: 5 });
         if (setStartTime) setStartTime(Date.now());
@@ -381,6 +399,14 @@ ${textContent}`,
 
         const controller = new AbortController();
         abortControllerRef.current = controller;
+        const capturedChapters = state.chapters || [];
+        const capturedMemories = state.memoryIndex || [];
+        const baselineCanon = {
+            chapters: capturedChapters,
+            storyControl: state.storyControl,
+            storyState: state.storyState,
+            memoryIndex: capturedMemories
+        };
 
         try {
             const ai = getAiClient();
@@ -416,7 +442,7 @@ ${textContent}`,
                 memoryIndex: state.memoryIndex
             };
 
-            const roleAwareRunner = async (role: StoryModelRole, prompt: string, sys?: string) => {
+            const roleAwareRunner = async (role: StoryModelRole, prompt: string, sys?: string, attemptSignal?: AbortSignal) => {
                 const semanticRole = role === 'PLAN_VALIDATOR_SEMANTIC' || role === 'STORY_VALIDATOR_SEMANTIC';
                 const longFormRole = role === 'WRITER' || role === 'AUTO_REPAIR';
                 return smartExecution(
@@ -424,15 +450,24 @@ ${textContent}`,
                     async (modelId) => {
                         const r = await ai.models.generateContent({
                             model: modelId,
+                            modelCandidates: [...getStoryModelCandidates(role, false)],
                             contents: prompt,
                             config: {
                                 systemInstruction: sys,
                                 safetySettings: SAFETY_SETTINGS,
-                                temperature: semanticRole ? 0.1 : longFormRole ? 0.8 : 0.3,
+                                ...(supportsGeminiSamplingConfig(modelId) ? { temperature: semanticRole ? 0.1 : longFormRole ? 0.8 : 0.3 } : {}),
                                 ...(longFormRole ? { maxOutputTokens: 65536 } : {}),
-                                abortSignal: controller.signal
+                                abortSignal: attemptSignal ? AbortSignal.any([controller.signal, attemptSignal]) : controller.signal
                             }
                         });
+                        const target = r.executionTarget;
+                        if (target) {
+                            const actual = getGeminiModel(target.model)?.label || target.model;
+                            const preferred = target.fallbackFrom ? (getGeminiModel(target.fallbackFrom)?.label || target.fallbackFrom) : undefined;
+                            addLog?.(preferred
+                                ? `[Story Engine ${role}] Đang dùng ${actual} qua ${target.profileLabel} vì không có nguồn ${preferred} khả dụng.`
+                                : `[Story Engine ${role}] ${actual} qua ${target.profileLabel}.`, 'info');
+                        }
                         return r.text || '';
                     },
                     `Story Engine ${role}`, addLog
@@ -443,11 +478,12 @@ ${textContent}`,
                 bible,
                 existingControl: state.storyControl,
                 existingState: state.storyState,
-                existingMemories: state.memoryIndex || [],
-                existingChapters: state.chapters || [],
+                existingMemories: capturedMemories,
+                existingChapters: capturedChapters,
                 batchSize,
                 aiRoleRunner: roleAwareRunner,
-                storyModelAvailability: { FAST: true, QUALITY: !IS_LITE },
+                storyModelAvailability: { FAST: true, QUALITY: true },
+                signal: controller.signal,
                 onProgress: (info, progressPercent) => {
                     if (typeof info === 'string') {
                         setEngineProgress({
@@ -486,21 +522,32 @@ ${textContent}`,
                 [...(prevSnapshots || []), currentSnapshot].slice(-CREATIVE_SNAPSHOT_LIMIT);
 
             // Cập nhật state chính thức khi QA Passed
-            setState(prev => ({
-                ...prev,
-                chapters: [...(prev.chapters || []), ...result.acceptedChapters],
-                characters: mergeExtractedCharacters(prev.characters, result.newCharacters, result.nextControl,
-                    result.nextState.currentChapter),
-                storyControl: result.nextControl,
-                storyState: result.nextState,
-                continuitySummary: result.updatedContinuitySummary,
-                memoryIndex: result.nextMemories,
-                lastValidationResult: sanitizeValidationResultForDiagnostics(result.validationResult, result.nextControl),
-                snapshots: pushSnapshot(prev.snapshots)
-            }));
+            let stale = false;
+            setState(prev => {
+                if (!isCreativeCanonBaselineCurrent(prev, baselineCanon)) {
+                    stale = true;
+                    return prev;
+                }
+                return {
+                    ...prev,
+                    chapters: [...(prev.chapters || []), ...result.acceptedChapters],
+                    characters: mergeExtractedCharacters(prev.characters, result.newCharacters, result.nextControl,
+                        result.nextState.currentChapter),
+                    storyControl: result.nextControl,
+                    storyState: result.nextState,
+                    continuitySummary: result.updatedContinuitySummary,
+                    setup: { ...(prev.setup || {}), premise: result.updatedContinuitySummary },
+                    memoryIndex: result.nextMemories,
+                    lastValidationResult: sanitizeValidationResultForDiagnostics(result.validationResult, result.nextControl),
+                    snapshots: pushSnapshot(prev.snapshots)
+                };
+            });
+            if (stale) {
+                addToast('Canon đã thay đổi trong khi sinh chương; kết quả cũ đã bị hủy an toàn.', 'warning');
+                return;
+            }
 
             // Đồng bộ lại continuitySummary vào setup.premise nếu cần hiển thị
-            setSetup({ premise: result.updatedContinuitySummary });
 
             addToast(`Đã hoàn tất nghiệm thu & lưu ${result.acceptedChapters.length} chương mới! (QA Score: ${result.validationResult.continuityScore}/100)`, 'success');
 
@@ -514,10 +561,13 @@ ${textContent}`,
                 addLog?.(`Lỗi pipeline: ${e.message}`, 'error');
             }
         } finally {
-            abortControllerRef.current = null;
-            setIsGenerating(false);
-            setEngineProgress(null);
-            if (setEndTime) setEndTime(Date.now());
+            if (abortControllerRef.current === controller) {
+                generationLockRef.current = false;
+                abortControllerRef.current = null;
+                setIsGenerating(false);
+                setEngineProgress(null);
+                if (setEndTime) setEndTime(Date.now());
+            }
         }
     };
 
@@ -621,10 +671,10 @@ ${textContent}`,
             storyControl: target.storyControl,
             storyState: target.storyState,
             memoryIndex: target.memoryIndex,
+            setup: target.setup ? { ...target.setup } : prev.setup,
             storyEngineSanity: undefined,
             snapshots: snapshots.slice(0, idx)
         }));
-        setSetup({ premise: target.continuitySummary || target.premise });
         addToast(`Đã khôi phục về mốc ${target.chapterCountBefore} chương.`, 'success');
     };
 

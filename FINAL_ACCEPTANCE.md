@@ -1,5 +1,9 @@
 # Final Acceptance
 
+> Historical record: the access-code/session implementation described below was retired in the private AI Studio deployment redesign. Current deployment guidance is [README.md](README.md) and [docs/provider-routing.md](docs/provider-routing.md): there are no `/api/auth/*` routes, `APP_ACCESS_CODE_HASH`, or `SESSION_SIGNING_SECRET` requirements. A future public deployment requires real authentication and abuse controls.
+
+> Current multi-profile release status (2026-08-30): local code, regression, build, credential-boundary, PDF, and production-server gates pass. Real AI Studio deployment/profile/stream/Story Chapters 1–2 acceptance is still pending and is not claimed by the historical evidence below.
+
 ## Candidate
 
 Whole Application Finalization Program — Gate 1 Product Definition Freeze and Gate 2 Whole-App Technical Audit.

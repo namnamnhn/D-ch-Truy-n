@@ -1,11 +1,10 @@
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { deepSeekKeyManager } from './services/api/deepseek';
 import { MainUI } from './components/MainUI';
 import { ModalManager } from './components/ModalManager';
 import { ToastContainer, LoadingModal, RawDownloadModal, ApiSettingsModal } from './components/modals';
 import { Loader2, AlertTriangle, UploadCloud } from 'lucide-react';
-import { IntroPage } from './components/IntroPage';
 
 import { useCoreState } from './hooks/useCoreState';
 import { useUIState } from './hooks/useUIState';
@@ -20,11 +19,8 @@ import { DEFAULT_RATIO_LIMITS } from './constants/ratioLimits';
 import { downloadTextFile } from './utils/fileHelpers';
 import { quotaManager } from './utils/quotaManager';
 import { countForeignChars, validateTranslationIntegrity } from './utils/text';
-import { getAuthStatus, logoutServerSession } from './services/api/authClient';
 
 const App: React.FC = () => {
-  const [authState, setAuthState] = useState<'checking' | 'authenticated' | 'unauthenticated'>('checking');
-  const [forceShowIntro, setForceShowIntro] = useState<boolean>(false);
   const dragDepthRef = useRef(0);
 
   // 1. Initialize State Hooks
@@ -210,55 +206,11 @@ const App: React.FC = () => {
   // FIX59 (Lite): lắng nghe event yêu cầu nhập API Key Gemini -> mở Cài đặt
   useEffect(() => {
       const openKey = () => ui.setShowSettings(true);
-      const invalidateSession = () => {
-          setAuthState('unauthenticated');
-          setForceShowIntro(true);
-      };
       window.addEventListener('open-gemini-key-settings', openKey);
-      window.addEventListener('auth-session-invalid', invalidateSession);
       return () => {
           window.removeEventListener('open-gemini-key-settings', openKey);
-          window.removeEventListener('auth-session-invalid', invalidateSession);
       };
   }, []);
-
-  useEffect(() => {
-      let active = true;
-      const checkServerSession = async () => {
-          const status = await getAuthStatus();
-          if (!active) return;
-          setAuthState(status.authenticated ? 'authenticated' : 'unauthenticated');
-          if (!status.authenticated) setForceShowIntro(true);
-      };
-      void checkServerSession();
-      const intervalId = setInterval(() => { void checkServerSession(); }, 30000);
-      const handleVisibility = () => {
-          if (document.visibilityState === 'visible') void checkServerSession();
-      };
-      document.addEventListener('visibilitychange', handleVisibility);
-      return () => {
-          active = false;
-          clearInterval(intervalId);
-          document.removeEventListener('visibilitychange', handleVisibility);
-      };
-  }, []);
-
-  const handleLogout = async () => {
-      await logoutServerSession();
-      setAuthState('unauthenticated');
-      setForceShowIntro(true);
-  };
-
-  if (authState === 'checking') {
-      return <div className="h-screen w-full flex flex-col items-center justify-center bg-zinc-950 text-zinc-300"><Loader2 className="w-10 h-10 animate-spin mb-4" /><p>Đang xác thực phiên máy chủ...</p></div>;
-  }
-
-  if (authState !== 'authenticated' || forceShowIntro) {
-      return <IntroPage onEnter={() => {
-          setAuthState('authenticated');
-          setForceShowIntro(false);
-      }} />;
-  }
 
   // Render
   if (!core.isLoaded) {
@@ -664,8 +616,7 @@ const App: React.FC = () => {
         setAutomationInitialConfig={ui.setAutomationInitialConfig}
 
         onShowChangelog={() => ui.setShowChangelog(true)}
-        onShowIntro={() => setForceShowIntro(true)}
-        onLogout={() => { void handleLogout(); }}
+        onShowIntro={() => ui.setShowGuide(true)}
         startTime={engine.startTime}
         setStartTime={engine.setStartTime}
         endTime={engine.endTime}

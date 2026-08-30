@@ -37,8 +37,86 @@ describe('WP-FIN-02 provider boundary', () => {
     expect(response.status).toBe(200);
     expect(receivedKey).toBe(sentinel);
     expect(body.text).toBe('safe result');
+    expect(body.executionTarget).toMatchObject({ profileLabel: 'Gemini mặc định', model: GEMINI_MODEL });
     expect(JSON.stringify(body)).not.toContain(sentinel);
     expect(JSON.stringify(geminiPayload())).not.toContain(sentinel);
+  });
+
+  it('fails over a non-stream request when one Gemini profile is misconfigured', async () => {
+    const used: string[] = [];
+    const response = await handleProviderGateway(geminiPayload(), {
+      env: { GEMINI_PROFILE_1_API_KEY: 'bad-profile', GEMINI_PROFILE_2_API_KEY: 'healthy-profile' },
+      createGeminiClient: key => ({ models: {
+        generateContent: async () => {
+          used.push(key);
+          if (key === 'bad-profile') throw Object.assign(new Error('invalid credential'), { status: 401 });
+          return { text: 'healthy result' };
+        },
+        generateContentStream: async () => (async function* () {})(),
+      } }),
+    });
+    expect(response.status).toBe(200);
+    expect((await readJson(response)).text).toBe('healthy result');
+    expect(used).toEqual(['bad-profile', 'healthy-profile']);
+  });
+
+  it('reports an understandable profile configuration state when no credential is healthy', async () => {
+    const response = await handleProviderGateway(geminiPayload(), {
+      env: { GEMINI_PROFILE_1_API_KEY: 'bad-profile' },
+      createGeminiClient: () => ({ models: {
+        generateContent: async () => { throw Object.assign(new Error('invalid credential'), { status: 401 }); },
+        generateContentStream: async () => (async function* () {})(),
+      } }),
+    });
+    expect(response.status).toBe(401);
+    expect((await readJson(response)).error).toMatchObject({ code: 'PROFILE_MISCONFIGURED', retryable: true });
+  });
+
+  it('fails over a stream before its first chunk when one Gemini profile is misconfigured', async () => {
+    const used: string[] = [];
+    const response = await handleProviderGateway(geminiPayload('stream'), {
+      env: { GEMINI_PROFILE_1_API_KEY: 'bad-stream-profile', GEMINI_PROFILE_2_API_KEY: 'healthy-stream-profile' },
+      createGeminiClient: key => ({ models: {
+        generateContent: async () => ({}),
+        generateContentStream: async () => {
+          used.push(key);
+          if (key === 'bad-stream-profile') throw Object.assign(new Error('invalid credential'), { status: 401 });
+          return (async function* () { yield { text: 'healthy stream' }; })();
+        },
+      } }),
+    });
+    const body = await response.text();
+    expect(body).toContain('healthy stream');
+    expect(body).not.toContain('"type":"error"');
+    expect(used).toEqual(['bad-stream-profile', 'healthy-stream-profile']);
+  });
+
+  it('removes unsupported sampling knobs when failover selects Gemini 3.7', async () => {
+    const requests: any[] = [];
+    const response = await handleProviderGateway({
+      provider: 'gemini', action: 'generate', request: {
+        model: 'gemini-3.1-pro-preview',
+        modelCandidates: ['gemini-3.1-pro-preview', 'gemini-3.7-flash'],
+        contents: 'Hello',
+        config: { temperature: 0.7, topP: 0.9, topK: 20, candidateCount: 1, maxOutputTokens: 32 },
+      },
+    }, {
+      env: { GEMINI_API_KEY: 'one-profile' },
+      createGeminiClient: () => ({ models: {
+        generateContent: async (params: any) => {
+          requests.push(params);
+          if (params.model === 'gemini-3.1-pro-preview') throw Object.assign(new Error('model unavailable'), { status: 404 });
+          return { text: 'fallback succeeded' };
+        },
+        generateContentStream: async () => (async function* () {})(),
+      } }),
+    });
+    expect(response.status).toBe(200);
+    expect(requests.map(request => request.model)).toEqual(['gemini-3.1-pro-preview', 'gemini-3.7-flash']);
+    expect(requests[1].config).toEqual({ maxOutputTokens: 32 });
+    expect((await readJson(response)).executionTarget).toMatchObject({
+      model: 'gemini-3.7-flash', fallbackFrom: 'gemini-3.1-pro-preview',
+    });
   });
 
   it('reports a safe explicit missing-secret configuration error', async () => {

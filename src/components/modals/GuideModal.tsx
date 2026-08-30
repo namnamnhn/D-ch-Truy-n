@@ -131,23 +131,11 @@ export const GuideModal: React.FC<GuideModalProps> = ({ isOpen, onClose }) => {
                             <div className="space-y-4">
                                 <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
                                     <ol className="list-decimal pl-5 space-y-3 text-slate-700">
-                                        <li>Nên chuẩn bị tối thiểu 5 acc gmail khác nhau.</li>
-                                        <li>Trình duyệt Chrome hoặc tương tự -&gt; Tạo 5 profile, mỗi profile là 1 gmail tương ứng (nếu chưa biết cách tạo hỏi Gemini)</li>
-                                        <li>Tải tệp cần dịch lên (dạng zip từng tệp txt hoặc epub xuất ở vbook) -&gt; Nhấn auto -&gt; chọn các bước phân tích nhanh, phân tích chuyên sâu ngữ cảnh, thiết kế prompt (Nhớ kiểm tra ngôn ngữ truyện để tránh nhầm lẫn giữa raw và convert để đảm bảo phân tích ngữ cảnh và thiết kế prompt chuẩn nhất)</li>
-                                        <li>Backup lại thông tin</li>
-                                        <li>Tiến hành chia file cần dịch. Tốt nhất là dạng zip từng tệp txt. Chia thành 4 tệp zip nhỏ.</li>
-                                        <li>
-                                            Mở 4 profile còn nguyên quota. Restore lại file backup. Mỗi profile là 1 tệp zip đã được chia nhỏ. Chỉnh sửa tên mỗi phần ở mục thông tin thành dạng. Để dễ tạo epub lúc cuối.
-                                            <ul className="list-disc pl-5 mt-2 space-y-1 text-slate-600">
-                                                <li>Tên truyện (1)</li>
-                                                <li>Tên truyện (2)</li>
-                                                <li>Tên truyện (3)</li>
-                                                <li>Tên truyện (4)</li>
-                                            </ul>
-                                        </li>
-                                        <li>Auto chọn chế độ normal và chờ thành quả -&gt; hết quota thì backup xong restore qua profile khác nếu còn. Auto tiếp.</li>
-                                        <li>Sau khi dịch xong hết ở mỗi tệp -&gt; chọn tải gộp txt về.</li>
-                                        <li>Mở app tạo epub -&gt; điền thông tin Tên truyện, tác giả, ảnh bìa. Chỗ tệp chọn hết 4 tệp txt đã tải về -&gt; nhấn tạo epub. Xong</li>
+                                        <li>Trong <b>Cài đặt → Gemini Profiles</b>, kiểm tra các nguồn Gemini hợp lệ đã được chủ sở hữu cấu hình bằng AI Studio Secrets.</li>
+                                        <li>Tải tệp cần dịch lên (ZIP gồm TXT hoặc EPUB), kiểm tra đúng ngôn ngữ nguồn rồi chạy quy trình tự động.</li>
+                                        <li>Ứng dụng tự ưu tiên model phù hợp, thử profile khỏe khác trước khi hạ model, và tôn trọng thời gian chờ của Google. Không cần đổi Chrome profile hoặc chép API key vào trình duyệt.</li>
+                                        <li>Backup định kỳ để bảo vệ bản thảo. Backup chỉ chứa dữ liệu tác phẩm và metadata an toàn, không chứa Gemini credential.</li>
+                                        <li>Khi hoàn tất, tải TXT gộp hoặc tạo EPUB với tên truyện, tác giả và ảnh bìa.</li>
                                     </ol>
                                 </div>
                             </div>

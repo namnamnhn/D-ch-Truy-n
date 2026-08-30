@@ -46,11 +46,19 @@ export interface SemanticPlanValidationResult {
   error?: string;
 }
 
+export interface SemanticPlanValidationOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+const semanticPlanAbortError = () => Object.assign(new Error('Semantic plan validation was cancelled.'), { name: 'AbortError' });
+
 export async function validateBatchPlanSemantically(
   plan: BatchPlan,
   control: StoryControl,
   state: StoryState,
-  runner: (prompt: string, systemInstruction: string) => Promise<string>
+  runner: (prompt: string, systemInstruction: string, signal?: AbortSignal) => Promise<string>,
+  options: SemanticPlanValidationOptions = {}
 ): Promise<SemanticPlanValidationResult> {
   const systemInstruction = `You are the Story Engine V3 semantic plan validator.
 Audit the approved ChapterPlan against the complete hidden StoryControl and StoryState.
@@ -59,7 +67,38 @@ future-arc leakage, or a plan that cannot satisfy the active mystery/exposure st
 Return only strict JSON: {"pass":true,"violations":[]}.
 violations must contain only short category labels, never hidden facts, answers, evidence, or explanations.`;
   const prompt = `=== STORY ENGINE V3: INTERNAL PLAN VALIDATOR INPUT ===\n${JSON.stringify({ plan, control, state }, null, 2)}`;
-  const parsed = parseJsonObject(await runner(prompt, systemInstruction), 'Semantic Plan Validator output');
+  const { signal, timeoutMs = 60_000 } = options;
+  if (signal?.aborted) throw semanticPlanAbortError();
+
+  const attemptController = new AbortController();
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let onParentAbort: (() => void) | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      attemptController.abort();
+      reject(new Error('SEMANTIC_PLAN_TIMEOUT'));
+    }, Math.max(1, timeoutMs));
+  });
+  const parentAbort = signal ? new Promise<never>((_, reject) => {
+    onParentAbort = () => {
+      attemptController.abort();
+      reject(semanticPlanAbortError());
+    };
+    signal.addEventListener('abort', onParentAbort, { once: true });
+  }) : new Promise<never>(() => {});
+
+  let raw: string;
+  try {
+    raw = await Promise.race([
+      runner(prompt, systemInstruction, attemptController.signal),
+      timeout,
+      parentAbort
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (signal && onParentAbort) signal.removeEventListener('abort', onParentAbort);
+  }
+  const parsed = parseJsonObject(raw, 'Semantic Plan Validator output');
   if (typeof parsed.pass !== 'boolean' || !Array.isArray(parsed.violations)
     || parsed.violations.some(value => typeof value !== 'string')) {
     throw new Error('Semantic Plan Validator output must contain boolean pass and string[] violations.');

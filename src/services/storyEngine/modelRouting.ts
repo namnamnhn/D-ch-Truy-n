@@ -1,15 +1,21 @@
 import { StoryModelRole, StoryModelRoute, StoryModelTier } from './types';
+import { APPROVED_GEMINI_MODEL_IDS } from '../../../shared/geminiModelRegistry';
 
 export const FAST_STORY_MODELS = [
   'gemini-3.7-flash',
   'gemini-3.6-flash',
   'gemini-3.5-flash',
   'gemini-3-flash-preview',
-  'gemini-3.5-flash-lite'
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite'
 ] as const;
 
 export const QUALITY_STORY_MODELS = [
-  'gemini-3.1-pro-preview'
+  'gemini-3.1-pro-preview',
+  'gemini-3.7-flash',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash',
+  'gemini-3-flash-preview'
 ] as const;
 
 export interface StoryModelPolicy {
@@ -24,10 +30,9 @@ export const DEFAULT_STORY_MODEL_POLICY: StoryModelPolicy = {
 
 function approvedCandidatesForTier(tier: StoryModelTier, policy: StoryModelPolicy): string[] {
   const requested = tier === 'QUALITY' ? policy.QUALITY : policy.FAST;
-  const oppositePolicy = new Set(tier === 'QUALITY' ? policy.FAST : policy.QUALITY);
-  const oppositeDefaults = new Set<string>(tier === 'QUALITY' ? FAST_STORY_MODELS : QUALITY_STORY_MODELS);
-  return [...new Set(requested)].filter(candidate =>
-    !oppositePolicy.has(candidate) && !oppositeDefaults.has(candidate));
+  // A competent Flash model may legitimately serve both policy tiers. Policy
+  // membership is not an exclusion rule; Lite is excluded by the QUALITY list.
+  return [...new Set(requested)];
 }
 
 const TIERS: Record<StoryModelRole, StoryModelTier> = {
@@ -42,7 +47,7 @@ const TIERS: Record<StoryModelRole, StoryModelTier> = {
 };
 
 const STRICT_REQUIRED = new Set<StoryModelRole>([
-  'STORY_VALIDATOR_SEMANTIC'
+  'STORY_CONTROL_COMPILER', 'PLAN_VALIDATOR_SEMANTIC', 'STORY_VALIDATOR_SEMANTIC', 'WRITER', 'AUTO_REPAIR'
 ]);
 
 const FAST_FALLBACK_ALLOWED = new Set<StoryModelRole>([
@@ -61,6 +66,8 @@ export function getStoryModelRoute(
     tier,
     requiredInStrictMode: STRICT_REQUIRED.has(role),
     allowFastFallback: FAST_FALLBACK_ALLOWED.has(role),
+    qualityFloor: STRICT_REQUIRED.has(role) ? 'FLASH' : 'FLASH',
+    degraded: false,
     status: availability[tier] === undefined ? 'unknown' : availability[tier] ? 'available' : 'unavailable'
   };
 }
@@ -78,7 +85,7 @@ export function getStoryModelCandidates(
 ): readonly string[] {
   const route = getStoryModelRoute(role);
   const tier = route.tier === 'FAST' || (lite && route.allowFastFallback) ? 'FAST' : 'QUALITY';
-  return approvedCandidatesForTier(tier, policy);
+  return approvedCandidatesForTier(tier, policy).filter(model => APPROVED_GEMINI_MODEL_IDS.includes(model));
 }
 
 export function isStoryModelAllowedForRole(

@@ -231,7 +231,23 @@ export const smartExecution = async <T>(
             // candidate model bị backoff thử lại ~3-4 lần vô ích rồi kết thúc bằng thông báo
             // "Tất cả model đã thử đều gặp lỗi hoặc hết Quota [CAUSE:BLACKLIST_TEMP]" gây hiểu
             // lầm. Người dùng đã dừng thì ném thẳng ra ngoài, không đụng quotaManager.
-            if ((error.message || '') === 'ABORTED') throw error;
+            const isAborted = error?.code === 'ABORTED' || error?.name === 'AbortError'
+                || error?.status === 499 || error?.message === 'ABORTED' || /\babort(?:ed)?\b/i.test(error?.message || '');
+            if (isAborted) throw error;
+
+            // The server scheduler has already evaluated every eligible
+            // profile/model target and honored bounded Retry-After cooldowns.
+            // Never let the legacy browser quota manager reinterpret a
+            // normalized gateway result by counting repeated 429s globally.
+            const gatewayCodes = new Set([
+                'QUOTA_EXHAUSTED', 'RATE_LIMITED', 'PROFILE_UNAVAILABLE',
+                'PROFILE_MISCONFIGURED', 'MODEL_UNAVAILABLE', 'TEMPORARILY_UNAVAILABLE', 'PROVIDER_UNAVAILABLE',
+                'SERVER_CONFIGURATION_MISSING', 'DEPLOYMENT_ACCESS_NOT_CONFIGURED'
+            ]);
+            if (gatewayCodes.has(error?.code)) {
+                if (onLog) onLog(`⚠️ [${taskName}] ${error.message}`);
+                throw error;
+            }
 
             const isQuotaError = msg.includes('429') || msg.includes('exceeded quota') || msg.includes('quota exceeded') || msg.includes('resource exhausted') || msg.includes('quota');
             const isInvalidKey = msg.includes('api key not valid') || msg.includes('api_key_invalid') || (error.status === 400 && msg.includes('key')) || msg.includes('401 unauthorized');
