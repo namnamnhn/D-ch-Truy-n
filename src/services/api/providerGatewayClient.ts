@@ -137,6 +137,12 @@ async function* readGeminiNdjson(response: Response, abortController: AbortContr
       }
       if (done) break;
     }
+  } catch (error) {
+    if (error instanceof ProviderGatewayError) throw error;
+    if (abortController.signal.aborted || (error as { name?: string })?.name === 'AbortError') {
+      throw new ProviderGatewayError('Provider stream was aborted.', 'ABORTED', 499, false);
+    }
+    throw new ProviderGatewayError('Provider stream was interrupted before completion.', 'PROVIDER_UNAVAILABLE', 503, true);
   } finally {
     abortController.abort();
     try { await reader.cancel(); } catch { /* response may already be closed */ }
@@ -152,6 +158,54 @@ export async function generateGeminiContentStream(request: GeminiClientRequest):
   }
   const response = await openProviderGatewayStream({ provider: 'gemini', action: 'stream', request: payload }, controller.signal);
   return readGeminiNdjson(response, controller);
+}
+
+/**
+ * Collect one logical Gemini stream. If a retryable stream dies after emitting
+ * partial text, that partial buffer is discarded and the entire logical call
+ * restarts. This is required for canon-safe long-form Story Engine output: two
+ * different profile/model continuations are never concatenated.
+ */
+export async function generateGeminiContentStreamWithRestart(
+  request: GeminiClientRequest,
+  options: {
+    maxAttempts?: number;
+    onExecutionTarget?: (target: NonNullable<GeminiGatewayResponse['executionTarget']>) => void;
+    onRestart?: (attempt: number, error: ProviderGatewayError) => void;
+  } = {},
+): Promise<GeminiGatewayResponse> {
+  const maxAttempts = Math.max(1, Math.min(options.maxAttempts ?? 2, 3));
+  let finalError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let text = '';
+    let aggregate: GeminiGatewayResponse = {};
+    let targetReported = false;
+    try {
+      const stream = await generateGeminiContentStream(request);
+      for await (const chunk of stream) {
+        text += chunk.text || '';
+        aggregate = { ...aggregate, ...chunk };
+        if (chunk.executionTarget && !targetReported) {
+          targetReported = true;
+          options.onExecutionTarget?.(chunk.executionTarget);
+        }
+      }
+      return { ...aggregate, text };
+    } catch (error) {
+      finalError = error;
+      const normalized = error instanceof ProviderGatewayError
+        ? error
+        : new ProviderGatewayError('Provider stream was interrupted before completion.', 'PROVIDER_UNAVAILABLE', 503, true);
+      if (request.config?.abortSignal?.aborted || normalized.code === 'ABORTED' || !normalized.retryable || attempt >= maxAttempts) {
+        throw normalized;
+      }
+      options.onRestart?.(attempt, normalized);
+      // `text` is intentionally abandoned here. The scheduler will select a
+      // fresh target for the next complete logical attempt.
+    }
+  }
+  throw finalError instanceof Error ? finalError
+    : new ProviderGatewayError('Provider stream failed safely.', 'PROVIDER_UNAVAILABLE', 503, true);
 }
 
 export const createGatewayGeminiClient = () => ({

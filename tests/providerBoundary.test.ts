@@ -6,7 +6,7 @@ import { DEEPSEEK_MODELS } from '../src/services/api/deepseek';
 import { APPROVED_DEEPSEEK_MODELS } from '../shared/providerContract';
 import { sanitizePersistedCredentials } from '../src/utils/credentialSanitizer';
 import { redactProviderSecrets } from '../src/utils/secretRedaction';
-import { generateGeminiContentStream } from '../src/services/api/providerGatewayClient';
+import { generateGeminiContentStream, generateGeminiContentStreamWithRestart } from '../src/services/api/providerGatewayClient';
 
 const GEMINI_MODEL = 'gemini-3.5-flash';
 const geminiPayload = (action: 'generate' | 'stream' | 'health' = 'generate', model = GEMINI_MODEL) => ({
@@ -182,6 +182,34 @@ describe('WP-FIN-02 provider boundary', () => {
     for await (const chunk of stream) chunks.push(chunk);
     expect(chunks.map(chunk => chunk.text)).toEqual(['A', 'B']);
     expect(fetchMock).toHaveBeenCalledWith('/api/provider', expect.objectContaining({ method: 'POST' }));
+    vi.unstubAllGlobals();
+  });
+
+  it('restarts a broken long-form stream without concatenating its partial output', async () => {
+    const encoder = new TextEncoder();
+    const broken = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(`${JSON.stringify({ type: 'chunk', data: { text: 'PARTIAL', executionTarget: { profileId: 'one', profileLabel: 'One', profileFingerprint: 'f1', model: GEMINI_MODEL } } })}\n`));
+        controller.error(new Error('connection reset'));
+      },
+    });
+    const complete = [
+      JSON.stringify({ type: 'chunk', data: { text: 'SAFE ', executionTarget: { profileId: 'two', profileLabel: 'Two', profileFingerprint: 'f2', model: GEMINI_MODEL } } }),
+      JSON.stringify({ type: 'chunk', data: { text: 'RESULT' } }),
+    ].join('\n') + '\n';
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(broken, { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } }))
+      .mockResolvedValueOnce(new Response(complete, { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const restarts: number[] = [];
+    const result = await generateGeminiContentStreamWithRestart({ model: GEMINI_MODEL, contents: 'long story' }, {
+      maxAttempts: 2, onRestart: attempt => restarts.push(attempt),
+    });
+    expect(result.text).toBe('SAFE RESULT');
+    expect(result.text).not.toContain('PARTIAL');
+    expect(result.executionTarget?.profileId).toBe('two');
+    expect(restarts).toEqual([1]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     vi.unstubAllGlobals();
   });
 

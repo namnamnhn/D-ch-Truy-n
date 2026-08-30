@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { getAiClient, smartExecution, SAFETY_SETTINGS } from '../../services/api/gemini';
+import { generateGeminiContentStreamWithRestart } from '../../services/api/providerGatewayClient';
 import { getGeminiModel, supportsGeminiSamplingConfig } from '../../../shared/geminiModelRegistry';
 import { CreativeState, Character, CreativeSnapshot } from '../../types';
 import { IS_LITE } from '../../constants';
@@ -443,7 +444,7 @@ ${textContent}`,
                 const longFormRole = role === 'WRITER' || role === 'AUTO_REPAIR';
                 const candidates = [...getStoryModelCandidates(role, IS_LITE)];
                 const modelId = candidates[0];
-                const r = await ai.models.generateContent({
+                const request = {
                     model: modelId,
                     modelCandidates: candidates,
                     contents: prompt,
@@ -454,15 +455,22 @@ ${textContent}`,
                         ...(longFormRole ? { maxOutputTokens: 65536 } : {}),
                         abortSignal: attemptSignal ? AbortSignal.any([controller.signal, attemptSignal]) : controller.signal
                     }
-                });
-                const target = r.executionTarget;
-                if (target) {
+                };
+                const logTarget = (target: NonNullable<Awaited<ReturnType<typeof ai.models.generateContent>>['executionTarget']>) => {
                     const actual = getGeminiModel(target.model)?.label || target.model;
                     const preferred = target.fallbackFrom ? (getGeminiModel(target.fallbackFrom)?.label || target.fallbackFrom) : undefined;
                     addLog?.(preferred
                         ? `[Story Engine ${role}] Đang dùng ${actual} qua ${target.profileLabel} vì không có nguồn ${preferred} khả dụng.`
                         : `[Story Engine ${role}] ${actual} qua ${target.profileLabel}.`, 'info');
-                }
+                };
+                const r = longFormRole
+                    ? await generateGeminiContentStreamWithRestart(request, {
+                        maxAttempts: 2,
+                        onExecutionTarget: logTarget,
+                        onRestart: () => addLog?.(`[Story Engine ${role}] Luồng bị gián đoạn; đã bỏ toàn bộ partial output và khởi động lại an toàn trên nguồn khác.`, 'info')
+                    })
+                    : await ai.models.generateContent(request);
+                if (!longFormRole && r.executionTarget) logTarget(r.executionTarget);
                 return r.text || '';
             };
 
