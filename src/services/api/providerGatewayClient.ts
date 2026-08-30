@@ -31,6 +31,18 @@ async function throwGatewayError(response: Response): Promise<never> {
   );
 }
 
+async function ensureJsonResponse(response: Response): Promise<void> {
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.toLowerCase().includes('text/html')) {
+    throw new ProviderGatewayError(
+      'The AI Studio runtime is still starting. Please retry after the server is ready.',
+      'PROVIDER_UNAVAILABLE',
+      503,
+      true,
+    );
+  }
+}
+
 export async function callProviderGateway<T>(payload: ProviderGatewayRequest, signal?: AbortSignal): Promise<T> {
   let response: Response;
   try {
@@ -48,6 +60,7 @@ export async function callProviderGateway<T>(payload: ProviderGatewayRequest, si
     throw new ProviderGatewayError('Cannot reach the same-origin provider gateway.', 'PROVIDER_UNAVAILABLE', 503, true);
   }
   if (!response.ok) return throwGatewayError(response);
+  await ensureJsonResponse(response);
   return response.json() as Promise<T>;
 }
 
@@ -68,6 +81,7 @@ export async function openProviderGatewayStream(payload: ProviderGatewayRequest,
     throw new ProviderGatewayError('Cannot reach the same-origin provider gateway.', 'PROVIDER_UNAVAILABLE', 503, true);
   }
   if (!response.ok) return throwGatewayError(response);
+  await ensureJsonResponse(response);
   if (!response.body) throw new ProviderGatewayError('Provider stream has no response body.', 'PROVIDER_UNAVAILABLE', 502, true);
   return response;
 }

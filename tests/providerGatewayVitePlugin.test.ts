@@ -2,6 +2,7 @@ import { once } from 'node:events';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { providerGatewayPlugin } from '../server/providerGateway';
+import { callProviderGateway } from '../src/services/api/providerGatewayClient';
 
 type Middleware = (request: IncomingMessage, response: ServerResponse, next: () => void) => void | Promise<void>;
 
@@ -42,5 +43,22 @@ describe('provider gateway Vite integration', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('application/json');
     expect(await response.json()).toEqual({ profiles: [] });
+  });
+
+  it('normalizes an AI Studio HTML cold-start response instead of leaking JSON parse errors', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response('<!doctype html><title>Starting Server...</title>', {
+      status: 200,
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    });
+    try {
+      await expect(callProviderGateway({
+        provider: 'gemini',
+        action: 'health',
+        request: { model: 'gemini-3.5-flash', contents: 'ping' },
+      })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE', status: 503, retryable: true });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
