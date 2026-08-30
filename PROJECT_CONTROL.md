@@ -19,9 +19,13 @@ Verified in the real signed-in AI Studio environment on 2026-08-30:
 - `/api/auth/status` reaches the app router and returns HTTP 200 app JSON with `application/json; charset=utf-8`; runtime logs record `AI_STUDIO_AUTH_STATUS_REACHED`.
 - The former infrastructure HTML was a cold-start race: the first browser request could arrive while AI Studio still displayed `Starting Server...`. Status checks now accept only valid app JSON, retry transient cold starts with bounded backoff, and keep the intro screen self-healing without replaying login requests.
 - After a real AI Studio backend stop/restart and GitHub sync, the UI recovered to the correct `AUTH_NOT_CONFIGURED` message without weakening authentication.
-- `GEMINI_API_KEY` is selected in AI Studio Secrets and a freshly generated `SESSION_SIGNING_SECRET` is configured server-side. `APP_ACCESS_CODE_HASH` remains intentionally pending until the Chairman supplies the desired access code.
+- `GEMINI_API_KEY`, a freshly generated `SESSION_SIGNING_SECRET`, and the Chairman-supplied access-code SHA-256 hash are configured server-side in AI Studio Secrets. The plaintext access code is not stored in the repository or browser persistence.
+- AI Studio's reverse proxy changes the public Origin/Host relationship for same-origin POSTs. Browser-controlled Fetch Metadata now permits explicit `same-origin` traffic while `cross-site` remains fail-closed.
+- The primary session cookie remains `HttpOnly; SameSite=Strict`. The embedded Preview additionally receives a distinct `__Host-` cookie with `Secure; HttpOnly; SameSite=None; Partitioned`, so it is confined to the AI Studio top-level partition. Login survived the 30-second status poll, and logout cleared both cookies in the real Preview.
+- Real `/api/provider` Gemini health passed with `gemini-3.5-flash` in 1,923 ms through the server-side owner key. DeepSeek remains unconfigured and is not on the current Story Engine production route.
+- The Story Creation screen is authenticated and currently empty at zero chapters. The canonical `ThienHaGianDao_FINAL_ONE_FILE_V3.txt` is not present in the repository or accessible local workspace, so production import is waiting for that exact file rather than reconstructing or substituting story canon.
 
-Commit evidence: `205054e` (runtime contract), `b21d3b1` (live route trace), and `45a96ce` (cold-start recovery). Current regression evidence is 24 test files / 386 tests PASS, TypeScript PASS, changed-file ESLint PASS, production build PASS, production-server smoke PASS, credential artifact scan PASS, and PDF build verification PASS. Repository-wide ESLint retains the pre-existing nine-error baseline outside these changes.
+Commit evidence: `205054e` (runtime contract), `b21d3b1` (live route trace), `45a96ce` (cold-start recovery), `72954d0` (reverse-proxy same-origin acceptance), and `ec42281` (partitioned Preview session). Current regression evidence is 24 test files / 387 tests PASS, TypeScript PASS, changed-file ESLint PASS, production build PASS, production-server smoke PASS, credential artifact scan PASS, and PDF build verification PASS. Repository-wide ESLint retains the pre-existing nine-error baseline outside these changes.
 
 ## Historical Directive Source and Baseline
 
@@ -76,11 +80,12 @@ Automated evidence: thirteen provider-engine/security regressions and three prod
 
 - [x] Confirm editable Preview starts through `npm run dev`, logs `AI_STUDIO_PREVIEW_SERVER listening`, and `/api/auth/status` reaches the app router as HTTP 200 JSON rather than infrastructure HTML.
 - [x] Make the browser recover automatically when AI Studio briefly returns `Starting Server...` during a cold start.
-- [ ] Configure the Chairman's `APP_ACCESS_CODE_HASH`. `SESSION_SIGNING_SECRET` and `GEMINI_API_KEY` are already configured in **AI Studio Settings → Secrets**.
+- [x] Configure the Chairman's `APP_ACCESS_CODE_HASH`, `SESSION_SIGNING_SECRET`, and `GEMINI_API_KEY` in **AI Studio Settings → Secrets** without persisting plaintext access credentials in the repository or browser.
 
 - Confirm browser DevTools Sources cannot find the key and built browser artifacts contain no key.
 - Confirm provider Network request/response bodies never contain the server key.
-- Complete one ordinary Gemini request and one streaming request.
+- [x] Complete one ordinary Gemini request through the authenticated `/api/provider` route.
+- [ ] Complete one streaming Gemini request.
 - Complete one Story Engine call while preserving the selected role/model route.
 - Remove the secret temporarily and confirm the health/config UI shows the explicit server-configuration error.
 - Exercise a quota-limited mock/account state and confirm the browser still receives rate-limit semantics.
