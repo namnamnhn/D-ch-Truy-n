@@ -4,6 +4,7 @@ import type { Plugin } from 'vite';
 import {
   APPROVED_DEEPSEEK_MODELS,
   APPROVED_GEMINI_MODELS,
+  GEMINI_PROFILES_PATH,
   PROVIDER_GATEWAY_PATH,
   type DeepSeekGatewayRequest,
   type GeminiGatewayRequest,
@@ -471,12 +472,26 @@ export function createProviderRequestHandler(options: ProviderHttpHandlerOptions
 }
 
 export function providerGatewayPlugin(options: ProviderHttpHandlerOptions = {}): Plugin {
-  const handleRequest = createProviderRequestHandler(options);
+  // AI Studio may launch the repository through Vite directly instead of the
+  // custom `server.ts` adapter. Keep both provider routes in this plugin and
+  // share one scheduler so Vite preview has the same stateful behavior as the
+  // production/AI Studio Node entrypoints.
+  const scheduler = options.scheduler || new GeminiScheduler(options.env || process.env);
+  const dependencies = { ...options, scheduler };
+  const handleProviderRequest = createProviderRequestHandler(dependencies);
+  const handleProfilesRequest = createGeminiProfilesRequestHandler(dependencies);
   const install = (middlewares: { use: (fn: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, next: () => void) => void) => void }) => {
     middlewares.use(async (request, response, next) => {
       const pathname = (request.url || '').split('?')[0];
-      if (pathname !== PROVIDER_GATEWAY_PATH) return next();
-      await handleRequest(request, response);
+      if (pathname === PROVIDER_GATEWAY_PATH) {
+        await handleProviderRequest(request, response);
+        return;
+      }
+      if (pathname === GEMINI_PROFILES_PATH) {
+        await handleProfilesRequest(request, response);
+        return;
+      }
+      next();
     });
   };
 
@@ -496,7 +511,7 @@ export function createGeminiProfilesRequestHandler(options: ProviderGatewayDepen
       await writeNodeResponse(errorResponse(new GatewayFailure(503, 'DEPLOYMENT_ACCESS_NOT_CONFIGURED', 'Gemini profile metadata is available only in private AI Studio mode.')), response); return;
     }
     const pathname = (request.url || '').split('?')[0];
-    if (request.method === 'GET' && pathname === '/api/provider/profiles') { await writeNodeResponse(jsonResponse({ profiles: scheduler.getProfiles() }), response); return; }
+    if (request.method === 'GET' && pathname === GEMINI_PROFILES_PATH) { await writeNodeResponse(jsonResponse({ profiles: scheduler.getProfiles() }), response); return; }
     if (request.method !== 'POST') { response.setHeader('Allow', 'GET, POST'); await writeNodeResponse(errorResponse(new GatewayFailure(405, 'INVALID_REQUEST', 'Only GET and POST are allowed.')), response); return; }
     try {
       const input = await readJsonBody(request) as { action?: string; profileId?: string; label?: string; disabled?: boolean; model?: string; enabled?: boolean };
