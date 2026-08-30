@@ -23,9 +23,6 @@ export class ProviderGatewayError extends Error {
 
 async function throwGatewayError(response: Response): Promise<never> {
   const body = await response.json().catch(() => null) as ProviderErrorPayload | null;
-  if (response.status === 401 && typeof window !== 'undefined') {
-    window.dispatchEvent(new Event('auth-session-invalid'));
-  }
   throw new ProviderGatewayError(
     body?.error?.message || `Provider gateway failed with HTTP ${response.status}.`,
     body?.error?.code || 'PROVIDER_ERROR',
@@ -77,6 +74,7 @@ export async function openProviderGatewayStream(payload: ProviderGatewayRequest,
 
 export interface GeminiClientRequest {
   model: string;
+  modelCandidates?: string[];
   contents: unknown;
   config?: Record<string, unknown> & { abortSignal?: AbortSignal };
 }
@@ -85,7 +83,7 @@ function splitSignal(request: GeminiClientRequest): { signal?: AbortSignal; payl
   const { abortSignal, ...config } = request.config || {};
   return {
     signal: abortSignal,
-    payload: { model: request.model, contents: request.contents, ...(Object.keys(config).length ? { config } : {}) },
+    payload: { model: request.model, ...(request.modelCandidates?.length ? { modelCandidates: request.modelCandidates } : {}), contents: request.contents, ...(Object.keys(config).length ? { config } : {}) },
   };
 }
 
@@ -110,10 +108,13 @@ async function* readGeminiNdjson(response: Response, abortController: AbortContr
           const envelope = JSON.parse(line) as ProviderStreamEnvelope;
           if (envelope.type === 'error') {
             const status = envelope.error.code === 'ABORTED' ? 499
-              : envelope.error.code === 'RATE_LIMITED' ? 429
-                : envelope.error.code === 'SERVER_CONFIGURATION_MISSING' || envelope.error.code === 'PROVIDER_UNAVAILABLE' ? 503
-                  : envelope.error.code === 'INVALID_REQUEST' || envelope.error.code === 'MODEL_NOT_ALLOWED' ? 400
-                    : 502;
+              : envelope.error.code === 'RATE_LIMITED' || envelope.error.code === 'QUOTA_EXHAUSTED' ? 429
+                : envelope.error.code === 'PROFILE_MISCONFIGURED' ? 401
+                  : envelope.error.code === 'MODEL_UNAVAILABLE' ? 404
+                    : envelope.error.code === 'SERVER_CONFIGURATION_MISSING' || envelope.error.code === 'PROVIDER_UNAVAILABLE'
+                      || envelope.error.code === 'PROFILE_UNAVAILABLE' || envelope.error.code === 'TEMPORARILY_UNAVAILABLE' ? 503
+                      : envelope.error.code === 'INVALID_REQUEST' || envelope.error.code === 'MODEL_NOT_ALLOWED' ? 400
+                        : 502;
             throw new ProviderGatewayError(envelope.error.message, envelope.error.code, status, envelope.error.retryable);
           }
           yield envelope.data;

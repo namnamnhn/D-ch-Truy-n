@@ -5,6 +5,7 @@
 // chỉ nhằm mục đích: khi cần sửa lỗi luồng dịch, chỉ cần mở đúng 1 file này thay vì phải
 // tìm trong 1 file 1500 dòng gộp chung 8 hàm khác nhau.
 import { getAiClient, smartExecution, SAFETY_SETTINGS } from '../../api/gemini';
+import { getGeminiModel, supportsGeminiSamplingConfig } from '../../../../shared/geminiModelRegistry';
 import { fetchDeepSeekStream, getDeepSeekModelInfo } from '../../api/deepseek';
 import { StoryInfo, TranslationTier, RatioLimits, FileItem } from '../../../types';
 import { isContentFilterFinishReason, buildContentFilterErrorMessage } from '../../../utils/contentFilterError';
@@ -510,6 +511,7 @@ CRITICAL: DO NOT TRANSLATE THE TAGS. ALWAYS OUTPUT THE EXACT TAGS (e.g. ${startT
         
         // Add timeout for the initial connection
         let connectionTimeoutId: NodeJS.Timeout | undefined;
+        let streamAbortPoll: ReturnType<typeof setInterval> | undefined;
         const connectionTimeout = new Promise<never>((_, reject) => {
             connectionTimeoutId = setTimeout(() => reject(new Error('CONNECTION_TIMEOUT')), 3600000); // 3600s for stream to start
         });
@@ -550,6 +552,7 @@ CRITICAL: DO NOT TRANSLATE THE TAGS. ALWAYS OUTPUT THE EXACT TAGS (e.g. ${startT
             // the real source tail and mass-flagged unrelated, perfectly-translated files as
             // "Nghi vấn nhầm chương" (false positives) purely because of this earlier truncation.
             let hitMaxTokensCutoff = false;
+            let announcedExecutionTarget = '';
 
 
             try {
@@ -594,14 +597,19 @@ CRITICAL: DO NOT TRANSLATE THE TAGS. ALWAYS OUTPUT THE EXACT TAGS (e.g. ${startT
                 // kết thúc, tức kết thúc tự nhiên thật sự.
                 streamEndedNaturally = true;
             } else {
+                const streamAbortController = new AbortController();
+                streamAbortPoll = shouldAbort ? setInterval(() => {
+                    if (shouldAbort()) streamAbortController.abort();
+                }, 50) : undefined;
                 const responseStreamPromise = ai.models.generateContentStream({ 
                     model: mid, 
                     contents: fullPrompt, 
                     config: { 
                         systemInstruction: finalPrompt, 
-                        temperature: 0.2, 
+                        ...(supportsGeminiSamplingConfig(mid) ? { temperature: 0.2 } : {}),
                         safetySettings: SAFETY_SETTINGS,
-                        maxOutputTokens: 65536
+                        maxOutputTokens: 65536,
+                        abortSignal: streamAbortController.signal
                     } 
                 });
 
@@ -634,6 +642,18 @@ CRITICAL: DO NOT TRANSLATE THE TAGS. ALWAYS OUTPUT THE EXACT TAGS (e.g. ${startT
                     }
                     
                     const chunk = result.value;
+                    const target = chunk.executionTarget;
+                    if (target) {
+                        const targetKey = `${target.profileId}\u0000${target.model}`;
+                        if (targetKey !== announcedExecutionTarget) {
+                            announcedExecutionTarget = targetKey;
+                            const actual = getGeminiModel(target.model)?.label || target.model;
+                            const preferred = target.fallbackFrom ? (getGeminiModel(target.fallbackFrom)?.label || target.fallbackFrom) : undefined;
+                            if (onLog) onLog(preferred
+                                ? `🔄 Đang dùng ${actual} qua ${target.profileLabel} vì không có nguồn ${preferred} khả dụng.`
+                                : `🤖 ${actual} qua ${target.profileLabel}.`);
+                        }
+                    }
                     
                     // Check for safety blocks.
                     // FIX (bug "quota tụt về 0 khi dính bộ lọc" + "không cứu hộ DeepSeek"): Gemini có
@@ -705,6 +725,10 @@ CRITICAL: DO NOT TRANSLATE THE TAGS. ALWAYS OUTPUT THE EXACT TAGS (e.g. ${startT
                     }
                 }
             }
+            if (streamAbortPoll) {
+                clearInterval(streamAbortPoll);
+                streamAbortPoll = undefined;
+            }
             } // end else (Gemini stream)
             } catch (e: any) {
                 // FIX (dừng mà vẫn tốn API): lỗi ABORTED do người dùng chủ động dừng phiên —
@@ -716,6 +740,17 @@ CRITICAL: DO NOT TRANSLATE THE TAGS. ALWAYS OUTPUT THE EXACT TAGS (e.g. ${startT
                 streamErrorToReturn = e;
             }
 
+        // A post-chunk provider/reset error invalidates this logical attempt.
+        // Never parse, validate, fingerprint, or complete a concatenated partial.
+        if (streamErrorToReturn) {
+            fullTextAccumulator = '';
+            // The UI receives throttled partial text while a stream is live. If
+            // that logical attempt fails, clear every partial before
+            // smartExecution retries another profile/model so attempts can
+            // never be concatenated or mistaken for completed translations.
+            for (const file of files) onUpdate(file.id, '');
+            throw streamErrorToReturn;
+        }
         // --- FINAL DEEP SWEEP (Robust Parsing & Fallback) ---
         // TÁI CẤU TRÚC R-B: parse chuẩn + Hybrid recovery đã tách thành hàm thuần
         // parseFinalResults() ở cấp module (test hồi quy: tests/streamParser.test.ts).
@@ -931,6 +966,7 @@ CRITICAL: DO NOT TRANSLATE THE TAGS. ALWAYS OUTPUT THE EXACT TAGS (e.g. ${startT
         };
         } finally {
             if (connectionTimeoutId) clearTimeout(connectionTimeoutId);
+            if (streamAbortPoll) clearInterval(streamAbortPoll);
         }
     }, "Dịch Streaming", onLog, preferredModelId);
 };

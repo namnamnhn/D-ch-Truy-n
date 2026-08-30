@@ -6,6 +6,7 @@ import {
   createGeminiProfilesRequestHandler,
   type ProviderGatewayDependencies,
 } from './providerGateway';
+import { GeminiScheduler } from './geminiScheduler';
 
 const DEFAULT_PREVIEW_PORT = 3000;
 
@@ -44,10 +45,11 @@ export async function createAiStudioPreviewServer(
   options: AiStudioPreviewServerOptions = {},
 ): Promise<AiStudioPreviewServer> {
   const env = options.env || process.env;
-  const handleProfilesRequest = createGeminiProfilesRequestHandler({ env, ...options.providerDependencies });
+  const scheduler = options.providerDependencies?.scheduler || new GeminiScheduler(env);
+  const providerDependencies = { env, ...options.providerDependencies, scheduler };
+  const handleProfilesRequest = createGeminiProfilesRequestHandler(providerDependencies);
   const handleProviderRequest = createProviderRequestHandler({
-    env,
-    ...options.providerDependencies,
+    ...providerDependencies,
   });
   const viteServer = await createViteServer({
     appType: 'spa',

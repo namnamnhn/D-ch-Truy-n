@@ -348,18 +348,18 @@ describe('Writer continuity hardening - atomicity and repair safety', () => {
 });
 
 describe('Writer continuity hardening - QUALITY routing and diagnostics', () => {
-  test('28. semantic story validator never routes to a FAST-only candidate', () => {
+  test('28. semantic story validator enforces the no-Lite quality floor while allowing shared competent candidates', () => {
     const candidates = getStoryModelCandidates('STORY_VALIDATOR_SEMANTIC');
-    expect(candidates.some(candidate => candidate.includes('flash'))).toBe(false);
-    const poisonedPolicy: StoryModelPolicy = {
+    expect(candidates.some(candidate => candidate.includes('lite'))).toBe(false);
+    const sharedPolicy: StoryModelPolicy = {
       FAST: ['gemini-3.7-flash'], QUALITY: ['gemini-3.7-flash']
     };
-    expect(getStoryModelCandidates('STORY_VALIDATOR_SEMANTIC', false, poisonedPolicy)).toEqual([]);
+    expect(getStoryModelCandidates('STORY_VALIDATOR_SEMANTIC', false, sharedPolicy)).toEqual(['gemini-3.7-flash']);
   });
 
-  test('29. semantic plan validator never routes to a FAST-only candidate', () => {
+  test('29. semantic plan validator never routes to Lite', () => {
     const candidates = getStoryModelCandidates('PLAN_VALIDATOR_SEMANTIC');
-    expect(candidates.some(candidate => candidate.includes('flash'))).toBe(false);
+    expect(candidates.some(candidate => candidate.includes('lite'))).toBe(false);
   });
 
   test('30. Writer and AutoRepair follow the same central QUALITY policy', () => {
@@ -370,15 +370,15 @@ describe('Writer continuity hardening - QUALITY routing and diagnostics', () => 
   });
 
   test('31. 429 on the first configured QUALITY candidate falls back to the second QUALITY candidate', async () => {
-    const policy: StoryModelPolicy = { FAST: ['fast-only'], QUALITY: ['quality-a', 'quality-b'] };
+    const policy: StoryModelPolicy = { FAST: ['gemini-3.5-flash-lite'], QUALITY: ['gemini-3.1-pro-preview', 'gemini-3.7-flash'] };
     const calls: string[] = [];
     const result = await runApprovedStoryModelCandidates('STORY_VALIDATOR_SEMANTIC', async model => {
       calls.push(model);
-      if (model === 'quality-a') throw new Error('429 rate limited');
+      if (model === 'gemini-3.1-pro-preview') throw new Error('429 rate limited');
       return 'ok';
     }, policy);
     expect(result).toBe('ok');
-    expect(calls).toEqual(['quality-a', 'quality-b']);
+    expect(calls).toEqual(['gemini-3.1-pro-preview', 'gemini-3.7-flash']);
   });
 
   test('32. all semantic QUALITY candidates unavailable returns QA_UNAVAILABLE and saves nothing', async () => {
@@ -393,7 +393,7 @@ describe('Writer continuity hardening - QUALITY routing and diagnostics', () => 
   });
 
   test('33. candidate exhaustion has no infinite rate-limit retry', async () => {
-    const policy: StoryModelPolicy = { FAST: ['fast-only'], QUALITY: ['quality-a', 'quality-b'] };
+    const policy: StoryModelPolicy = { FAST: ['gemini-3.5-flash-lite'], QUALITY: ['gemini-3.1-pro-preview', 'gemini-3.7-flash'] };
     let calls = 0;
     await expect(runApprovedStoryModelCandidates('WRITER', async () => {
       calls++;

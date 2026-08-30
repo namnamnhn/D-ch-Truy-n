@@ -24,7 +24,6 @@ export interface MainUIProps {
     // Header & Sidebar Logic
     onShowChangelog: () => void;
     onShowIntro: () => void;
-    onLogout: () => void;
     isAutoSaving: boolean;
     lastSaved: Date | null;
     enabledModels: string[];

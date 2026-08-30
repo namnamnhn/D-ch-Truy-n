@@ -11,7 +11,7 @@ export const SEMANTIC_VALIDATOR_MODEL_ROLE = 'semantic-validator' as const;
 export const MAX_SEMANTIC_ATTEMPTS = 2;
 export const DEFAULT_SEMANTIC_TIMEOUT_MS = 60_000;
 
-export type SemanticRunner = (prompt: string, systemInstruction: string) => Promise<string>;
+export type SemanticRunner = (prompt: string, systemInstruction: string, signal?: AbortSignal) => Promise<string>;
 
 const violationTypes = new Set<string>(STORY_VIOLATION_TYPES);
 
@@ -185,13 +185,16 @@ export function qaUnavailableResult(attempts: number, reason = 'Semantic story Q
   };
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout?: () => void, signal?: AbortSignal): Promise<T> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Semantic QA timed out.')), timeoutMs);
+    const aborted = () => { clearTimeout(timer); reject(Object.assign(new Error('Semantic QA cancelled.'), { name: 'AbortError' })); };
+    const timer = setTimeout(() => { signal?.removeEventListener('abort', aborted); onTimeout?.(); reject(new Error('Semantic QA timed out.')); }, timeoutMs);
+    if (signal?.aborted) return aborted();
+    signal?.addEventListener('abort', aborted, { once: true });
     promise.then(
-      value => { clearTimeout(timer); resolve(value); },
-      error => { clearTimeout(timer); reject(error); }
+      value => { clearTimeout(timer); signal?.removeEventListener('abort', aborted); resolve(value); },
+      error => { clearTimeout(timer); signal?.removeEventListener('abort', aborted); reject(error); }
     );
   });
 }
@@ -227,6 +230,7 @@ export async function runSemanticValidation(
     maxAttempts?: number;
     timeoutMs?: number;
     strictLowSeverity?: boolean;
+    signal?: AbortSignal;
   } = {}
 ): Promise<StoryValidationResult> {
   const maxAttempts = Math.max(1, Math.min(options.maxAttempts ?? MAX_SEMANTIC_ATTEMPTS, MAX_SEMANTIC_ATTEMPTS));
@@ -234,13 +238,19 @@ export async function runSemanticValidation(
   const timeoutMs = options.timeoutMs ?? DEFAULT_SEMANTIC_TIMEOUT_MS;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const raw = await withTimeout(runner(prompt, buildSemanticValidatorSystemPrompt()), timeoutMs);
+      if (options.signal?.aborted) throw Object.assign(new Error('Semantic QA cancelled.'), { name: 'AbortError' });
+      const controller = new AbortController();
+      const abortParent = () => controller.abort();
+      options.signal?.addEventListener('abort', abortParent, { once: true });
+      const raw = await withTimeout(runner(prompt, buildSemanticValidatorSystemPrompt(), controller.signal), timeoutMs, () => controller.abort(), options.signal);
+      options.signal?.removeEventListener('abort', abortParent);
       const parsed = parseSemanticValidationResponse(raw);
       return canonicalizeStoryValidation(parsed.pass, parsed.violations, parsed.warnings, {
         strictLowSeverity: options.strictLowSeverity,
         attempts: attempt
       });
-    } catch {
+    } catch (error) {
+      if (options.signal?.aborted || (error as { name?: string })?.name === 'AbortError') throw error;
       if (attempt === maxAttempts) {
         return qaUnavailableResult(attempt, 'Semantic story QA could not return a valid result after bounded retry.');
       }

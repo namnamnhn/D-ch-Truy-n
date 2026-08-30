@@ -13,7 +13,8 @@ import {
   type ProviderGatewayRequest,
 } from '../shared/providerContract';
 import { redactProviderSecrets } from '../src/utils/secretRedaction';
-import { GeminiScheduler, isPrivateAiStudio, isSameOriginBrowserRequest } from './geminiScheduler';
+import { GeminiScheduler, isPrivateAiStudio, isSafeProfileLabel, isSameOriginBrowserRequest } from './geminiScheduler';
+import { supportsGeminiSamplingConfig } from '../shared/geminiModelRegistry';
 
 const MAX_REQUEST_BYTES = 16 * 1024 * 1024;
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
@@ -43,15 +44,7 @@ export interface ProviderGatewayDependencies {
   scheduler?: GeminiScheduler;
 }
 
-export type ProviderRequestAuthorizer = (request: IncomingMessage) => boolean | Promise<boolean>;
-
-export interface ProviderHttpHandlerOptions extends ProviderGatewayDependencies {
-  /**
-   * Must be supplied by the server-side access/session authority owned by WP-FIN-03.
-   * There is deliberately no browser token or header fallback.
-   */
-  authorizeRequest?: ProviderRequestAuthorizer;
-}
+export type ProviderHttpHandlerOptions = ProviderGatewayDependencies;
 
 class GatewayFailure extends Error {
   constructor(
@@ -83,8 +76,14 @@ function normalizedFailure(error: unknown, signal?: AbortSignal): GatewayFailure
     const exhausted = /quota_exceeded|daily|per day|daily quota/.test(lower);
     return new GatewayFailure(429, exhausted ? 'QUOTA_EXHAUSTED' : 'RATE_LIMITED', exhausted ? 'Hạn mức ngày của model đã hết; hãy chờ nhà cung cấp đặt lại.' : 'Model đang trong thời gian chờ do giới hạn tốc độ.', true);
   }
-  if (status === 404 || status === 503 || /model.*(?:not found|unavailable)|provider.*unavailable/.test(lower)) {
-    return new GatewayFailure(status || 503, 'PROVIDER_UNAVAILABLE', 'The selected provider or model is unavailable.', true);
+  if (status === 401 || status === 403) {
+    return new GatewayFailure(status, 'PROFILE_MISCONFIGURED', 'Gemini profile credential or project access is not configured correctly.', true);
+  }
+  if (status === 404 || /model.*(?:not found|unsupported|unavailable)/.test(lower)) {
+    return new GatewayFailure(status || 404, 'MODEL_UNAVAILABLE', 'The selected model is unavailable on this Gemini profile.', true);
+  }
+  if (status === 503 || /provider.*unavailable|overload/.test(lower)) {
+    return new GatewayFailure(status || 503, 'PROVIDER_UNAVAILABLE', 'The provider is temporarily unavailable.', true);
   }
   if (status >= 400 && status < 500) {
     return new GatewayFailure(status, 'INVALID_REQUEST', 'The provider rejected the request.', false);
@@ -120,11 +119,16 @@ function validateGemini(payload: GeminiGatewayRequest): void {
   if (!payload.request || !APPROVED_GEMINI_MODELS.includes(payload.request.model as any)) {
     throw new GatewayFailure(403, 'MODEL_NOT_ALLOWED', 'The requested Gemini model is not approved.');
   }
-  if (Object.keys(payload.request).some(key => !['model', 'contents', 'config'].includes(key))) {
+  if (Object.keys(payload.request).some(key => !['model', 'modelCandidates', 'contents', 'config'].includes(key))) {
     throw new GatewayFailure(400, 'INVALID_REQUEST', 'Gemini request contains an unsupported field.');
   }
   if (payload.request.contents === undefined || !isPlainJson(payload.request.contents)) {
     throw new GatewayFailure(400, 'INVALID_REQUEST', 'Gemini contents must be valid JSON.');
+  }
+  if (payload.request.modelCandidates !== undefined && (!Array.isArray(payload.request.modelCandidates)
+    || payload.request.modelCandidates.length < 1 || payload.request.modelCandidates.length > 8
+    || payload.request.modelCandidates.some(model => typeof model !== 'string' || !APPROVED_GEMINI_MODELS.includes(model as any)))) {
+    throw new GatewayFailure(400, 'INVALID_REQUEST', 'Gemini model candidates are invalid.');
   }
   const config = payload.request.config;
   if (config !== undefined) {
@@ -173,7 +177,11 @@ function validateDeepSeek(payload: DeepSeekGatewayRequest): void {
   }
 }
 
-function serializeGeminiResponse(response: any): GeminiGatewayResponse {
+function serializeGeminiResponse(
+  response: any,
+  target?: { profile: { id: string; label: string; fingerprint: string }; model: string },
+  preferredModel?: string,
+): GeminiGatewayResponse {
   return {
     text: response?.text,
     data: response?.data,
@@ -182,38 +190,100 @@ function serializeGeminiResponse(response: any): GeminiGatewayResponse {
     promptFeedback: response?.promptFeedback,
     responseId: response?.responseId,
     usageMetadata: response?.usageMetadata,
+    ...(target ? { executionTarget: {
+      profileId: target.profile.id,
+      profileLabel: target.profile.label,
+      profileFingerprint: target.profile.fingerprint,
+      model: target.model,
+      ...(preferredModel && preferredModel !== target.model ? { fallbackFrom: preferredModel } : {}),
+    } } : {}),
   };
 }
 
+function geminiConfigForModel(config: Record<string, unknown> | undefined, model: string, signal?: AbortSignal): Record<string, unknown> {
+  const sanitized = { ...(config || {}) };
+  if (!supportsGeminiSamplingConfig(model)) {
+    delete sanitized.temperature;
+    delete sanitized.topP;
+    delete sanitized.topK;
+    delete sanitized.candidateCount;
+  }
+  if (signal) sanitized.abortSignal = signal;
+  return sanitized;
+}
+
+async function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 function createGeminiStream(
-  client: GeminiClient,
-  request: GeminiGatewayRequest['request'],
-  signal?: AbortSignal,
-  onComplete?: (error?: unknown) => void,
+  candidates: readonly string[], dependencies: Required<ProviderGatewayDependencies>,
+  request: GeminiGatewayRequest['request'], signal?: AbortSignal,
 ): ReadableStream<Uint8Array> {
+  const { modelCandidates: _modelCandidates, ...providerRequest } = request;
+  void _modelCandidates;
   const encoder = new TextEncoder();
   return new ReadableStream<Uint8Array>({
     async start(controller) {
-      try {
-        const stream = await client.models.generateContentStream({
-          ...request,
-          config: { ...(request.config || {}), ...(signal ? { abortSignal: signal } : {}) },
-        });
-        for await (const chunk of stream) {
-          if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-          controller.enqueue(encoder.encode(`${JSON.stringify({ type: 'chunk', data: serializeGeminiResponse(chunk) })}\n`));
+      const tried = new Set<string>();
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline && !signal?.aborted) {
+        const lease = dependencies.scheduler.acquire(candidates, tried);
+        if (!lease) {
+          const delay = dependencies.scheduler.nextRetryDelay(candidates, deadline - Date.now());
+          if (!delay) break;
+          try {
+            await waitForRetry(delay, signal);
+          } catch (error) {
+            const failure = normalizedFailure(error, signal);
+            controller.enqueue(encoder.encode(`${JSON.stringify({ type: 'error', error: { code: failure.code, message: failure.message, retryable: failure.retryable } })}\n`));
+            controller.close();
+            return;
+          }
+          tried.clear();
+          continue;
         }
-        onComplete?.();
-        controller.close();
-      } catch (error) {
-        onComplete?.(error);
-        const failure = normalizedFailure(error, signal);
-        controller.enqueue(encoder.encode(`${JSON.stringify({
-          type: 'error',
-          error: { code: failure.code, message: failure.message, retryable: failure.retryable },
-        })}\n`));
-        controller.close();
+        tried.add(`${lease.profile.id}\u0000${lease.model}`);
+        let emitted = false;
+        try {
+          const client = dependencies.createGeminiClient(lease.profile.key);
+          const stream = await client.models.generateContentStream({
+            ...providerRequest, model: lease.model,
+            config: geminiConfigForModel(request.config, lease.model, signal),
+          });
+          for await (const chunk of stream) {
+            if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+            emitted = true;
+            controller.enqueue(encoder.encode(`${JSON.stringify({ type: 'chunk', data: serializeGeminiResponse(chunk, lease, candidates[0]) })}\n`));
+          }
+          dependencies.scheduler.complete(lease);
+          controller.close();
+          return;
+        } catch (error) {
+          const targetStatus = dependencies.scheduler.complete(lease, error);
+          const failure = normalizedFailure(error, signal);
+          const canFailOver = failure.retryable || targetStatus === 'MISCONFIGURED';
+          if (!emitted && canFailOver && failure.code !== 'ABORTED') continue;
+          controller.enqueue(encoder.encode(`${JSON.stringify({ type: 'error', error: { code: failure.code, message: failure.message, retryable: failure.retryable } })}\n`));
+          controller.close();
+          return;
+        }
       }
+      const failure = signal?.aborted ? normalizedFailure(new DOMException('Aborted', 'AbortError'), signal)
+        : new GatewayFailure(503, 'PROFILE_UNAVAILABLE', 'Không có profile/model Gemini khả dụng.', true);
+      controller.enqueue(encoder.encode(`${JSON.stringify({ type: 'error', error: { code: failure.code, message: failure.message, retryable: failure.retryable } })}\n`));
+      controller.close();
     },
   });
 }
@@ -222,33 +292,56 @@ async function executeGemini(
   payload: GeminiGatewayRequest,
   dependencies: Required<ProviderGatewayDependencies>,
   signal?: AbortSignal,
+  deadline = Date.now() + 60_000,
 ): Promise<Response> {
   validateGemini(payload);
-  const scheduler = dependencies.scheduler || new GeminiScheduler(dependencies.env);
-  const lease = scheduler.acquire([payload.request.model]);
+  const scheduler = dependencies.scheduler;
+  const candidates = [...new Set(payload.request.modelCandidates?.length ? payload.request.modelCandidates : [payload.request.model])];
+  const { modelCandidates: _modelCandidates, ...providerRequest } = payload.request;
+  void _modelCandidates;
+  if (!scheduler.getProfiles().length) {
+    throw new GatewayFailure(503, 'SERVER_CONFIGURATION_MISSING', 'Gemini chưa được cấu hình trên máy chủ. Thêm GEMINI_API_KEY trong AI Studio Settings > Secrets.');
+  }
+  if (payload.action === 'stream') {
+    return new Response(createGeminiStream(candidates, dependencies, payload.request, signal), {
+      headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' },
+    });
+  }
+  const lease = scheduler.acquire(candidates);
   if (!lease) {
     const configured = scheduler.getProfiles().length > 0;
     if (!configured) {
     throw new GatewayFailure(503, 'SERVER_CONFIGURATION_MISSING', 'Gemini is not configured on the server. Add GEMINI_API_KEY in AI Studio Settings > Secrets.');
     }
+    const delay = scheduler.nextRetryDelay(candidates, deadline - Date.now());
+    if (delay) {
+      await waitForRetry(delay, signal);
+      return executeGemini(payload, dependencies, signal, deadline);
+    }
     throw new GatewayFailure(503, 'PROFILE_UNAVAILABLE', 'Không có Gemini profile/model khả dụng; kiểm tra trạng thái profile hoặc thử lại sau.');
   }
   const client = dependencies.createGeminiClient(lease.profile.key);
-  if (payload.action === 'stream') {
-    const stream = createGeminiStream(client, payload.request, signal, error => scheduler.complete(lease, error));
-    return new Response(stream, {
-      headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' },
-    });
-  }
   try {
     const response = await client.models.generateContent({
-      ...payload.request,
-      config: { ...(payload.request.config || {}), ...(signal ? { abortSignal: signal } : {}) },
+      ...providerRequest, model: lease.model,
+      config: geminiConfigForModel(payload.request.config, lease.model, signal),
     });
     scheduler.complete(lease);
-    return jsonResponse(serializeGeminiResponse(response));
+    return jsonResponse(serializeGeminiResponse(response, lease, candidates[0]));
   } catch (error) {
-    scheduler.complete(lease, error);
+    const targetStatus = scheduler.complete(lease, error);
+    const failure = normalizedFailure(error, signal);
+    const canFailOver = failure.retryable || targetStatus === 'MISCONFIGURED';
+    if (canFailOver && failure.code !== 'ABORTED' && scheduler.hasReady(candidates)) {
+      // Scheduler state makes the next invocation select another ready profile
+      // for this model before moving to a lower-priority candidate.
+      return executeGemini(payload, dependencies, signal, deadline);
+    }
+    const delay = canFailOver ? scheduler.nextRetryDelay(candidates, deadline - Date.now()) : undefined;
+    if (delay) {
+      await waitForRetry(delay, signal);
+      return executeGemini(payload, dependencies, signal, deadline);
+    }
     throw error;
   }
 }
@@ -340,7 +433,10 @@ async function writeNodeResponse(webResponse: Response, response: ServerResponse
 }
 
 export function createProviderRequestHandler(options: ProviderHttpHandlerOptions = {}) {
-  const providerDependencies = options;
+  const providerDependencies: ProviderHttpHandlerOptions = {
+    ...options,
+    scheduler: options.scheduler || new GeminiScheduler(options.env || process.env),
+  };
 
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (request.method !== 'POST') {
@@ -403,15 +499,35 @@ export function createGeminiProfilesRequestHandler(options: ProviderGatewayDepen
     if (request.method === 'GET' && pathname === '/api/provider/profiles') { await writeNodeResponse(jsonResponse({ profiles: scheduler.getProfiles() }), response); return; }
     if (request.method !== 'POST') { response.setHeader('Allow', 'GET, POST'); await writeNodeResponse(errorResponse(new GatewayFailure(405, 'INVALID_REQUEST', 'Only GET and POST are allowed.')), response); return; }
     try {
-      const input = await readJsonBody(request) as { action?: string; profileId?: string; label?: string; quotaGroup?: string; disabled?: boolean; model?: string; enabled?: boolean };
-      if (!input || typeof input !== 'object' || typeof input.profileId !== 'string') throw new GatewayFailure(400, 'INVALID_REQUEST', 'Profile action is malformed.');
-      if (input.action === 'update') {
-        const profile = scheduler.updateProfile(input.profileId, { label: input.label, quotaGroup: input.quotaGroup, disabled: input.disabled });
+      const input = await readJsonBody(request) as { action?: string; profileId?: string; label?: string; disabled?: boolean; model?: string; enabled?: boolean };
+      if (!input || typeof input !== 'object' || typeof input.action !== 'string') throw new GatewayFailure(400, 'INVALID_REQUEST', 'Profile action is malformed.');
+      if (input.action === 'add') {
+        // Secrets are process-owned. "Add" only tells the operator the next
+        // numbered AI Studio secret; a reload discovers it without ever POSTing a key.
+      } else if (typeof input.profileId !== 'string') throw new GatewayFailure(400, 'INVALID_REQUEST', 'Profile identifier is required.');
+      else if (input.action === 'update') {
+        if (typeof input.label === 'string' && !isSafeProfileLabel(input.label)) {
+          throw new GatewayFailure(400, 'INVALID_REQUEST', 'A profile label must not contain credential material.');
+        }
+        const profile = scheduler.updateProfile(input.profileId, { label: input.label, disabled: input.disabled });
         if (!profile) throw new GatewayFailure(404, 'INVALID_REQUEST', 'Profile was not found.');
       } else if (input.action === 'model' && typeof input.model === 'string' && typeof input.enabled === 'boolean') {
         if (!scheduler.setModelEnabled(input.profileId, input.model, input.enabled)) throw new GatewayFailure(404, 'INVALID_REQUEST', 'Profile or model was not found.');
-      } else if (input.action !== 'test') throw new GatewayFailure(400, 'INVALID_REQUEST', 'Unsupported profile action.');
-      await writeNodeResponse(jsonResponse({ profiles: scheduler.getProfiles(), addSecretName: `GEMINI_PROFILE_${scheduler.getProfiles().length + 1}_API_KEY` }), response);
+      } else if (input.action === 'remove') {
+        const profile = scheduler.updateProfile(input.profileId, { disabled: true });
+        if (!profile) throw new GatewayFailure(404, 'INVALID_REQUEST', 'Profile was not found.');
+      } else if (input.action === 'test') {
+        const model = typeof input.model === 'string' && APPROVED_GEMINI_MODELS.includes(input.model as any)
+          ? input.model : APPROVED_GEMINI_MODELS[0];
+        const lease = scheduler.acquireForProfile(input.profileId, model);
+        if (!lease) throw new GatewayFailure(503, 'PROFILE_UNAVAILABLE', 'Không có profile/model Gemini khả dụng để kiểm tra.', true);
+        try {
+          await (options.createGeminiClient || ((apiKey: string) => new GoogleGenAI({ apiKey }) as unknown as GeminiClient))(lease.profile.key)
+            .models.generateContent({ model: lease.model, contents: 'Trả lời đúng một từ: OK.', config: { maxOutputTokens: 8 } });
+          scheduler.complete(lease);
+        } catch (error) { scheduler.complete(lease, error); throw error; }
+      } else throw new GatewayFailure(400, 'INVALID_REQUEST', 'Unsupported profile action.');
+      await writeNodeResponse(jsonResponse({ profiles: scheduler.getProfiles(), addSecretName: scheduler.nextProfileSecretName() }), response);
     } catch (error) { await writeNodeResponse(errorResponse(error), response); }
   };
 }

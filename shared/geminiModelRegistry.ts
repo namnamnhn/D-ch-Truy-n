@@ -24,3 +24,5 @@ export const GEMINI_MODEL_REGISTRY: readonly GeminiModelCapability[] = [
 export const GEMINI_SPECIALIZED_MODELS = ['gemini-3.1-flash-lite-image', 'gemma-4-31b-it', 'gemma-4-26b-a4b-it'] as const;
 export const APPROVED_GEMINI_MODEL_IDS = GEMINI_MODEL_REGISTRY.map(model => model.id) as readonly string[];
 export const getGeminiModel = (id: string) => GEMINI_MODEL_REGISTRY.find(model => model.id === id);
+/** Gemini 3.6/3.7 managed endpoints reject legacy sampling knobs. */
+export const supportsGeminiSamplingConfig = (id: string) => !/^gemini-3\.[67]-/.test(id);

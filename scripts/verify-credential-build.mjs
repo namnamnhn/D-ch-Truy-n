@@ -5,12 +5,8 @@ import { build } from 'vite';
 
 const sentinelGemini = 'AIza_CLIENT_BUNDLE_SENTINEL_123456789012345';
 const sentinelDeepSeek = 'sk-client-bundle-sentinel-123456789012345';
-const sentinelAccessHash = 'a'.repeat(64);
-const sentinelSigningSecret = 'SESSION_SIGNING_SENTINEL_12345678901234567890';
 process.env.GEMINI_API_KEY = sentinelGemini;
 process.env.DEEPSEEK_API_KEY = sentinelDeepSeek;
-process.env.APP_ACCESS_CODE_HASH = sentinelAccessHash;
-process.env.SESSION_SIGNING_SECRET = sentinelSigningSecret;
 
 await build({ logLevel: 'warn' });
 await buildServer({
@@ -40,7 +36,7 @@ if (!files.length || !(await readdir(dist)).includes('server.cjs')) {
 
 for (const file of files) {
   const content = await readFile(file, 'utf8');
-  if ([sentinelGemini, sentinelDeepSeek, sentinelAccessHash, sentinelSigningSecret].some(secret => content.includes(secret))) {
+  if ([sentinelGemini, sentinelDeepSeek].some(secret => content.includes(secret))) {
     throw new Error(`Credential sentinel leaked into browser artifact: ${path.relative(dist, file)}`);
   }
   if (content.includes('api.deepseek.com/chat/completions')) {

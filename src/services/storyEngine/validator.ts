@@ -302,7 +302,8 @@ export async function validateBatchOutput(
   state: StoryState,
   bible: StoryBible,
   runner?: SemanticRunner,
-  priorChapters: CreativeChapter[] = []
+  priorChapters: CreativeChapter[] = [],
+  signal?: AbortSignal,
 ): Promise<StoryValidationResult> {
   try {
     const deterministic = validateDeterministicBatchOutput(chapters, batchPlan, control, state, bible);
@@ -310,10 +311,11 @@ export async function validateBatchOutput(
     const semantic = await runSemanticValidation(prompt, runner, {
       maxAttempts: 2,
       timeoutMs: configuredNumber(control, 'semanticQaTimeoutMs'),
-      strictLowSeverity: configuredBoolean(control, 'strictLowSeverity')
+      strictLowSeverity: configuredBoolean(control, 'strictLowSeverity'), signal
     });
     return mergeValidationLayers(deterministic, semantic, control);
-  } catch {
+  } catch (error) {
+    if ((error as { name?: string })?.name === 'AbortError') throw error;
     return qaUnavailableResult(0, 'Story QA infrastructure failed before a trustworthy verdict was produced.');
   }
 }

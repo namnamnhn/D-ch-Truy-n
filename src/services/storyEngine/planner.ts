@@ -147,8 +147,9 @@ export async function generateBatchPlan(
   nextChapter: number,
   batchSize: number,
   recentChapters: CreativeChapter[],
-  runner: (prompt: string, sys: string) => Promise<string>,
-  semanticRunner?: (prompt: string, sys: string) => Promise<string>
+  runner: (prompt: string, sys: string, signal?: AbortSignal) => Promise<string>,
+  semanticRunner?: (prompt: string, sys: string, signal?: AbortSignal) => Promise<string>,
+  signal?: AbortSignal
 ): Promise<BatchPlan> {
   const requestedChapterNumbers = Array.from({ length: batchSize }, (_, index) => nextChapter + index);
   const context = buildPlannerContext(bible, control, state, memoryIndex, nextChapter, batchSize, recentChapters);
@@ -161,18 +162,20 @@ plannedEvidence, plannedInferences, continuityRequirements và pacingTarget. Kh�
 Trả duy nhất JSON object có trường chapters. Không dùng markdown.${feedback.length
   ? `\nPlan trước bị reject. Sửa toàn bộ violation sau:\n${feedback.join('\n')}` : ''}`;
     try {
-      const raw = await runner(context, sys);
+      if (signal?.aborted) throw Object.assign(new Error('Plan generation was cancelled.'), { name: 'AbortError' });
+      const raw = await runner(context, sys, signal);
       const candidate = normalizeBatchPlan(raw, control, requestedChapterNumbers);
       const validation = validateBatchPlan(candidate, control, state, requestedChapterNumbers);
       if (validation.valid) {
         if (!semanticRunner) return validation.repairedPlan;
-        const semantic = await validateBatchPlanSemantically(validation.repairedPlan, control, state, semanticRunner);
+        const semantic = await validateBatchPlanSemantically(validation.repairedPlan, control, state, semanticRunner, { signal });
         if (semantic.valid) return validation.repairedPlan;
         feedback = [semantic.error || 'SEMANTIC_PLAN_REJECTED'];
         continue;
       }
       feedback = validation.errors;
     } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') throw error;
       feedback = [error instanceof Error ? error.message : String(error)];
     }
   }

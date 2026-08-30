@@ -212,10 +212,6 @@ const App: React.FC = () => {
       };
   }, []);
 
-  if (Boolean((globalThis as { __removedAccessGate?: boolean }).__removedAccessGate)) {
-      return <div className="h-screen w-full flex flex-col items-center justify-center bg-zinc-950 text-zinc-300"><Loader2 className="w-10 h-10 animate-spin mb-4" /><p>Đang xác thực phiên máy chủ...</p></div>;
-  }
-
   // Render
   if (!core.isLoaded) {
       return ( <div className="h-screen w-full flex flex-col items-center justify-center bg-slate-50 text-slate-600 animate-in fade-in"> <Loader2 className="w-12 h-12 text-indigo-600 animate-spin mb-4" /> <h2 className="text-xl font-bold">Đang tải dữ liệu...</h2> </div> );
@@ -620,8 +616,7 @@ const App: React.FC = () => {
         setAutomationInitialConfig={ui.setAutomationInitialConfig}
 
         onShowChangelog={() => ui.setShowChangelog(true)}
-        onShowIntro={() => setForceShowIntro(true)}
-        onLogout={() => { void handleLogout(); }}
+        onShowIntro={() => ui.setShowGuide(true)}
         startTime={engine.startTime}
         setStartTime={engine.setStartTime}
         endTime={engine.endTime}

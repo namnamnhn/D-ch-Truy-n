@@ -74,7 +74,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
                 <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex-shrink-0">
                     <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                         <Settings className="w-5 h-5 text-primary-500" />
-                        Quản Lý API Key & Model
+                        Nguồn AI & Model
                     </h3>
                     <button aria-label="Đóng" onClick={onClose} className="p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors duration-200 ease-smooth focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 focus-visible:ring-offset-1">
                         <X className="w-5 h-5" />

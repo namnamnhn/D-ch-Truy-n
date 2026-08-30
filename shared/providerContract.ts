@@ -14,9 +14,9 @@ export const APPROVED_DEEPSEEK_MODELS = [
 
 export type ProviderErrorCode =
   | 'ABORTED'
-  | 'AUTHORIZATION_NOT_CONFIGURED'
   | 'DEPLOYMENT_ACCESS_NOT_CONFIGURED'
   | 'PROFILE_UNAVAILABLE'
+  | 'PROFILE_MISCONFIGURED'
   | 'MODEL_UNAVAILABLE'
   | 'QUOTA_EXHAUSTED'
   | 'TEMPORARILY_UNAVAILABLE'
@@ -41,6 +41,9 @@ export interface GeminiGatewayRequest {
   action: 'generate' | 'stream' | 'health';
   request: {
     model: string;
+    /** Ordered server-side candidates. The gateway always tries every profile for
+     * a better model before it considers the next model. */
+    modelCandidates?: string[];
     contents: unknown;
     config?: Record<string, unknown>;
   };
@@ -75,6 +78,13 @@ export interface GeminiGatewayResponse {
   promptFeedback?: unknown;
   responseId?: string;
   usageMetadata?: unknown;
+  executionTarget?: {
+    profileId: string;
+    profileLabel: string;
+    profileFingerprint: string;
+    model: string;
+    fallbackFrom?: string;
+  };
 }
 
 export type ProviderStreamEnvelope =

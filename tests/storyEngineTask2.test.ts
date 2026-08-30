@@ -319,4 +319,29 @@ describe('Story Engine Task 2 - context isolation and planning contracts', () =>
     const result = validateBatchPlan(batch([chapterPlan(18, { arcId: 'arc_b' })]), makeControl(), makeState(), [18]);
     expect(result.violations.some(violation => violation.code === 'ARC_MISMATCH')).toBe(true);
   });
+
+  test('deferred STATE_EXTRACTOR abort fails the pipeline with zero accepted chapters', async () => {
+    const control = makeControl(); control.sourceHash = computeBibleHash(bible);
+    const state = makeState(); const aborter = new AbortController();
+    let extractorStarted!: () => void;
+    const started = new Promise<void>(resolve => { extractorStarted = resolve; });
+    const pending = runStoryEnginePipeline({
+      bible, existingControl: control, existingState: state, existingChapters: [], batchSize: 1, signal: aborter.signal,
+      storyModelAvailability: { FAST: true, QUALITY: true },
+      aiRoleRunner: async (role, _prompt, sys) => {
+        if (role === 'PLANNER') return validPlannerJson(1);
+        if (role === 'PLAN_VALIDATOR_SEMANTIC' || role === 'STORY_VALIDATOR_SEMANTIC') return JSON.stringify({ pass: true, violations: [] });
+        if (role === 'WRITER') return xml(1);
+        if (role === 'STATE_EXTRACTOR') {
+          extractorStarted();
+          await new Promise<void>((_resolve, reject) => aborter.signal.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), { name: 'AbortError' })), { once: true }));
+          return '{}';
+        }
+        return '{}';
+      }
+    });
+    await started; aborter.abort();
+    const result = await pending;
+    expect(result.success).toBe(false); expect(result.acceptedChapters).toEqual([]); expect(state.currentChapter).toBe(0);
+  });
 });
