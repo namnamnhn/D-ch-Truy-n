@@ -1,17 +1,11 @@
-export const PROVIDER_GATEWAY_PATH = '/api/provider';
+import { APPROVED_GEMINI_MODEL_IDS, GEMINI_SPECIALIZED_MODELS } from './geminiModelRegistry';
 
-export const APPROVED_GEMINI_MODELS = [
-  'gemini-3.1-pro-preview',
-  'gemini-3.7-flash',
-  'gemini-3.6-flash',
-  'gemini-3.5-flash',
-  'gemini-3-flash-preview',
-  'gemini-3.5-flash-lite',
-  'gemini-3.1-flash-lite',
-  'gemma-4-31b-it',
-  'gemma-4-26b-a4b-it',
-  'gemini-3.1-flash-lite-image',
-] as const;
+export const PROVIDER_GATEWAY_PATH = '/api/provider';
+export const GEMINI_PROFILES_PATH = '/api/provider/profiles';
+export const GEMINI_PROFILE_ACTION_PATH = '/api/provider/profiles/';
+
+/** Specialized IDs remain distinct in the registry, but are accepted by the gateway for their dedicated UI flows. */
+export const APPROVED_GEMINI_MODELS = [...APPROVED_GEMINI_MODEL_IDS, ...GEMINI_SPECIALIZED_MODELS];
 
 export const APPROVED_DEEPSEEK_MODELS = [
   'deepseek-v4-pro',
@@ -21,6 +15,11 @@ export const APPROVED_DEEPSEEK_MODELS = [
 export type ProviderErrorCode =
   | 'ABORTED'
   | 'AUTHORIZATION_NOT_CONFIGURED'
+  | 'DEPLOYMENT_ACCESS_NOT_CONFIGURED'
+  | 'PROFILE_UNAVAILABLE'
+  | 'MODEL_UNAVAILABLE'
+  | 'QUOTA_EXHAUSTED'
+  | 'TEMPORARILY_UNAVAILABLE'
   | 'INVALID_REQUEST'
   | 'MODEL_NOT_ALLOWED'
   | 'PROVIDER_UNAVAILABLE'

@@ -2,14 +2,10 @@ import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import path from 'node:path';
-import { PROVIDER_GATEWAY_PATH } from '../shared/providerContract';
-import {
-  AuthSessionAuthority,
-  createAuthRequestHandler,
-  isAuthPath,
-} from './authSession';
+import { GEMINI_PROFILES_PATH, PROVIDER_GATEWAY_PATH } from '../shared/providerContract';
 import {
   createProviderRequestHandler,
+  createGeminiProfilesRequestHandler,
   type ProviderGatewayDependencies,
 } from './providerGateway';
 
@@ -35,7 +31,6 @@ export interface ProductionServerOptions {
   buildDirectory?: string;
   env?: NodeJS.ProcessEnv;
   providerDependencies?: Omit<ProviderGatewayDependencies, 'env'>;
-  authAuthority?: AuthSessionAuthority;
 }
 
 const safePort = (value: string | undefined): number => {
@@ -113,23 +108,21 @@ async function serveStatic(
 export function createProductionServer(options: ProductionServerOptions = {}): Server {
   const buildDirectory = path.resolve(options.buildDirectory || DEFAULT_BUILD_DIRECTORY);
   const env = options.env || process.env;
-  const authAuthority = options.authAuthority || new AuthSessionAuthority({ env });
-  const handleAuthRequest = createAuthRequestHandler(authAuthority);
+  const handleProfilesRequest = createGeminiProfilesRequestHandler({ env, ...options.providerDependencies });
   const handleProviderRequest = createProviderRequestHandler({
     env,
     ...options.providerDependencies,
-    authorizeRequest: authAuthority.authorizeRequest,
   });
 
   return createServer((request, response) => {
     const pathname = (request.url || '').split('?')[0];
-    if (isAuthPath(pathname) || pathname === PROVIDER_GATEWAY_PATH) {
+    if (pathname === PROVIDER_GATEWAY_PATH || pathname === GEMINI_PROFILES_PATH) {
       response.setHeader('X-Application-Server', 'node-production');
     }
-    const operation = isAuthPath(pathname)
-      ? handleAuthRequest(request, response)
-      : pathname === PROVIDER_GATEWAY_PATH
+    const operation = pathname === PROVIDER_GATEWAY_PATH
         ? handleProviderRequest(request, response)
+        : pathname === GEMINI_PROFILES_PATH
+          ? handleProfilesRequest(request, response)
         : serveStatic(request, response, buildDirectory);
     void operation.catch(() => {
       if (!response.headersSent) sendText(response, 500, 'Internal Server Error');

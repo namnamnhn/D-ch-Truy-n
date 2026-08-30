@@ -4,6 +4,7 @@ import { Settings, X, CheckCircle, AlertTriangle, Loader2, Save, ShieldCheck } f
 import { runApiHealthCheck, ApiHealthResult } from '../../services/api/healthCheck';
 import { TriageSettingsTab } from './tabs/TriageSettingsTab';
 import { DeepSeekSettingsTab } from './tabs/DeepSeekSettingsTab';
+import { GeminiProfilesTab } from './tabs/GeminiProfilesTab';
 import { DEFAULT_TRIAGE_DELAYS } from './tabs/apiSettingsShared';
 
 interface ApiSettingsModalProps {
@@ -26,7 +27,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
     triageDelays, setTriageDelays
 }) => {
     const effectiveTriageDelays = triageDelays || DEFAULT_TRIAGE_DELAYS;
-    const [activeTab, setActiveTab] = useState<'deepseek' | 'triage'>('deepseek');
+    const [activeTab, setActiveTab] = useState<'deepseek' | 'triage' | 'gemini'>('gemini');
 
     // --- DEEPSEEK: state riêng ---
     const [localDsKey, setLocalDsKey] = useState(deepseekKey);
@@ -83,6 +84,10 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
                 {/* TAB BAR: DeepSeek / Hậu Kiểm */}
                 <div className="flex items-center gap-6 px-6 border-b border-slate-100 dark:border-slate-800 flex-shrink-0">
                     <button
+                        onClick={() => setActiveTab('gemini')}
+                        className={`py-3 text-sm font-bold border-b-2 transition-colors duration-200 ease-smooth ${activeTab === 'gemini' ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}
+                    >Gemini Profiles</button>
+                    <button
                         onClick={() => setActiveTab('deepseek')}
                         className={`py-3 text-sm font-bold border-b-2 transition-colors duration-200 ease-smooth flex items-center gap-2 ${activeTab === 'deepseek' ? 'border-teal-500 text-teal-600 dark:text-teal-400' : 'border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}
                     >
@@ -111,6 +116,7 @@ export const ApiSettingsModal: React.FC<ApiSettingsModalProps> = ({
                     deepseekKey={deepseekKey}
                     setDeepseekKey={setDeepseekKey}
                 />
+                {activeTab === 'gemini' && <div className="p-6 overflow-auto"><GeminiProfilesTab /></div>}
 
                 {/* NÂNG CẤP #9 — Chẩn đoán nhanh tất cả nhà cung cấp */}
                 <div className="px-6 py-4 border-t border-slate-100 dark:border-slate-800">

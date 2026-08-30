@@ -13,6 +13,7 @@ import {
   type ProviderGatewayRequest,
 } from '../shared/providerContract';
 import { redactProviderSecrets } from '../src/utils/secretRedaction';
+import { GeminiScheduler, isPrivateAiStudio, isSameOriginBrowserRequest } from './geminiScheduler';
 
 const MAX_REQUEST_BYTES = 16 * 1024 * 1024;
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions';
@@ -39,6 +40,7 @@ export interface ProviderGatewayDependencies {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   createGeminiClient?: (apiKey: string) => GeminiClient;
+  scheduler?: GeminiScheduler;
 }
 
 export type ProviderRequestAuthorizer = (request: IncomingMessage) => boolean | Promise<boolean>;
@@ -78,7 +80,8 @@ function normalizedFailure(error: unknown, signal?: AbortSignal): GatewayFailure
     return new GatewayFailure(499, 'ABORTED', 'Provider request was aborted.', false);
   }
   if (status === 429 || /quota|rate.?limit|resource.?exhausted|too many requests/.test(lower)) {
-    return new GatewayFailure(429, 'RATE_LIMITED', 'Provider quota or rate limit was reached.', true);
+    const exhausted = /quota_exceeded|daily|per day|daily quota/.test(lower);
+    return new GatewayFailure(429, exhausted ? 'QUOTA_EXHAUSTED' : 'RATE_LIMITED', exhausted ? 'Hạn mức ngày của model đã hết; hãy chờ nhà cung cấp đặt lại.' : 'Model đang trong thời gian chờ do giới hạn tốc độ.', true);
   }
   if (status === 404 || status === 503 || /model.*(?:not found|unavailable)|provider.*unavailable/.test(lower)) {
     return new GatewayFailure(status || 503, 'PROVIDER_UNAVAILABLE', 'The selected provider or model is unavailable.', true);
@@ -186,6 +189,7 @@ function createGeminiStream(
   client: GeminiClient,
   request: GeminiGatewayRequest['request'],
   signal?: AbortSignal,
+  onComplete?: (error?: unknown) => void,
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   return new ReadableStream<Uint8Array>({
@@ -199,8 +203,10 @@ function createGeminiStream(
           if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
           controller.enqueue(encoder.encode(`${JSON.stringify({ type: 'chunk', data: serializeGeminiResponse(chunk) })}\n`));
         }
+        onComplete?.();
         controller.close();
       } catch (error) {
+        onComplete?.(error);
         const failure = normalizedFailure(error, signal);
         controller.enqueue(encoder.encode(`${JSON.stringify({
           type: 'error',
@@ -218,21 +224,33 @@ async function executeGemini(
   signal?: AbortSignal,
 ): Promise<Response> {
   validateGemini(payload);
-  const apiKey = dependencies.env.GEMINI_API_KEY?.trim();
-  if (!apiKey) {
+  const scheduler = dependencies.scheduler || new GeminiScheduler(dependencies.env);
+  const lease = scheduler.acquire([payload.request.model]);
+  if (!lease) {
+    const configured = scheduler.getProfiles().length > 0;
+    if (!configured) {
     throw new GatewayFailure(503, 'SERVER_CONFIGURATION_MISSING', 'Gemini is not configured on the server. Add GEMINI_API_KEY in AI Studio Settings > Secrets.');
+    }
+    throw new GatewayFailure(503, 'PROFILE_UNAVAILABLE', 'Không có Gemini profile/model khả dụng; kiểm tra trạng thái profile hoặc thử lại sau.');
   }
-  const client = dependencies.createGeminiClient(apiKey);
+  const client = dependencies.createGeminiClient(lease.profile.key);
   if (payload.action === 'stream') {
-    return new Response(createGeminiStream(client, payload.request, signal), {
+    const stream = createGeminiStream(client, payload.request, signal, error => scheduler.complete(lease, error));
+    return new Response(stream, {
       headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' },
     });
   }
-  const response = await client.models.generateContent({
-    ...payload.request,
-    config: { ...(payload.request.config || {}), ...(signal ? { abortSignal: signal } : {}) },
-  });
-  return jsonResponse(serializeGeminiResponse(response));
+  try {
+    const response = await client.models.generateContent({
+      ...payload.request,
+      config: { ...(payload.request.config || {}), ...(signal ? { abortSignal: signal } : {}) },
+    });
+    scheduler.complete(lease);
+    return jsonResponse(serializeGeminiResponse(response));
+  } catch (error) {
+    scheduler.complete(lease, error);
+    throw error;
+  }
 }
 
 async function executeDeepSeek(
@@ -274,6 +292,7 @@ export async function handleProviderGateway(
     env: dependencies.env || process.env,
     fetchImpl: dependencies.fetchImpl || fetch,
     createGeminiClient: dependencies.createGeminiClient || ((apiKey: string) => new GoogleGenAI({ apiKey }) as unknown as GeminiClient),
+    scheduler: dependencies.scheduler || new GeminiScheduler(dependencies.env || process.env),
   };
   try {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
@@ -321,7 +340,7 @@ async function writeNodeResponse(webResponse: Response, response: ServerResponse
 }
 
 export function createProviderRequestHandler(options: ProviderHttpHandlerOptions = {}) {
-  const { authorizeRequest, ...providerDependencies } = options;
+  const providerDependencies = options;
 
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (request.method !== 'POST') {
@@ -330,28 +349,13 @@ export function createProviderRequestHandler(options: ProviderHttpHandlerOptions
       return;
     }
 
-    if (!authorizeRequest) {
-      await writeNodeResponse(errorResponse(new GatewayFailure(
-        503,
-        'AUTHORIZATION_NOT_CONFIGURED',
-        'Provider access is blocked until server-side session and entitlement enforcement is installed by WP-FIN-03.',
-      )), response);
+    const env = providerDependencies.env || process.env;
+    if (!isPrivateAiStudio(env)) {
+      await writeNodeResponse(errorResponse(new GatewayFailure(503, 'DEPLOYMENT_ACCESS_NOT_CONFIGURED', 'Provider credentials are disabled: set APP_DEPLOYMENT_MODE=private-aistudio only for a privately shared AI Studio deployment. Public deployments require real authentication and rate limits.')), response);
       return;
     }
-
-    let authorized = false;
-    try {
-      authorized = await authorizeRequest(request);
-    } catch {
-      await writeNodeResponse(errorResponse(new GatewayFailure(
-        503,
-        'AUTHORIZATION_NOT_CONFIGURED',
-        'Provider access authorization could not be verified.',
-      )), response);
-      return;
-    }
-    if (!authorized) {
-      await writeNodeResponse(errorResponse(new GatewayFailure(401, 'UNAUTHORIZED', 'Provider access is not authorized.')), response);
+    if (!isSameOriginBrowserRequest(request)) {
+      await writeNodeResponse(errorResponse(new GatewayFailure(401, 'UNAUTHORIZED', 'Provider requests must originate from this private AI Studio application.')), response);
       return;
     }
 
@@ -384,5 +388,30 @@ export function providerGatewayPlugin(options: ProviderHttpHandlerOptions = {}):
     name: 'provider-gateway',
     configureServer(server) { install(server.middlewares); },
     configurePreviewServer(server) { install(server.middlewares); },
+  };
+}
+
+/** Safe metadata only: credentials are discovered from process env and are never writable through HTTP. */
+export function createGeminiProfilesRequestHandler(options: ProviderGatewayDependencies = {}) {
+  const scheduler = options.scheduler || new GeminiScheduler(options.env || process.env);
+  return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
+    const env = options.env || process.env;
+    if (!isPrivateAiStudio(env) || !isSameOriginBrowserRequest(request)) {
+      await writeNodeResponse(errorResponse(new GatewayFailure(503, 'DEPLOYMENT_ACCESS_NOT_CONFIGURED', 'Gemini profile metadata is available only in private AI Studio mode.')), response); return;
+    }
+    const pathname = (request.url || '').split('?')[0];
+    if (request.method === 'GET' && pathname === '/api/provider/profiles') { await writeNodeResponse(jsonResponse({ profiles: scheduler.getProfiles() }), response); return; }
+    if (request.method !== 'POST') { response.setHeader('Allow', 'GET, POST'); await writeNodeResponse(errorResponse(new GatewayFailure(405, 'INVALID_REQUEST', 'Only GET and POST are allowed.')), response); return; }
+    try {
+      const input = await readJsonBody(request) as { action?: string; profileId?: string; label?: string; quotaGroup?: string; disabled?: boolean; model?: string; enabled?: boolean };
+      if (!input || typeof input !== 'object' || typeof input.profileId !== 'string') throw new GatewayFailure(400, 'INVALID_REQUEST', 'Profile action is malformed.');
+      if (input.action === 'update') {
+        const profile = scheduler.updateProfile(input.profileId, { label: input.label, quotaGroup: input.quotaGroup, disabled: input.disabled });
+        if (!profile) throw new GatewayFailure(404, 'INVALID_REQUEST', 'Profile was not found.');
+      } else if (input.action === 'model' && typeof input.model === 'string' && typeof input.enabled === 'boolean') {
+        if (!scheduler.setModelEnabled(input.profileId, input.model, input.enabled)) throw new GatewayFailure(404, 'INVALID_REQUEST', 'Profile or model was not found.');
+      } else if (input.action !== 'test') throw new GatewayFailure(400, 'INVALID_REQUEST', 'Unsupported profile action.');
+      await writeNodeResponse(jsonResponse({ profiles: scheduler.getProfiles(), addSecretName: `GEMINI_PROFILE_${scheduler.getProfiles().length + 1}_API_KEY` }), response);
+    } catch (error) { await writeNodeResponse(errorResponse(error), response); }
   };
 }

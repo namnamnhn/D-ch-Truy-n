@@ -1,11 +1,13 @@
 import { StoryModelRole, StoryModelRoute, StoryModelTier } from './types';
+import { APPROVED_GEMINI_MODEL_IDS } from '../../../shared/geminiModelRegistry';
 
 export const FAST_STORY_MODELS = [
   'gemini-3.7-flash',
   'gemini-3.6-flash',
   'gemini-3.5-flash',
   'gemini-3-flash-preview',
-  'gemini-3.5-flash-lite'
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite'
 ] as const;
 
 export const QUALITY_STORY_MODELS = [
@@ -42,7 +44,7 @@ const TIERS: Record<StoryModelRole, StoryModelTier> = {
 };
 
 const STRICT_REQUIRED = new Set<StoryModelRole>([
-  'STORY_VALIDATOR_SEMANTIC'
+  'STORY_CONTROL_COMPILER', 'PLAN_VALIDATOR_SEMANTIC', 'STORY_VALIDATOR_SEMANTIC', 'WRITER', 'AUTO_REPAIR'
 ]);
 
 const FAST_FALLBACK_ALLOWED = new Set<StoryModelRole>([
@@ -78,7 +80,7 @@ export function getStoryModelCandidates(
 ): readonly string[] {
   const route = getStoryModelRoute(role);
   const tier = route.tier === 'FAST' || (lite && route.allowFastFallback) ? 'FAST' : 'QUALITY';
-  return approvedCandidatesForTier(tier, policy);
+  return approvedCandidatesForTier(tier, policy).filter(model => APPROVED_GEMINI_MODEL_IDS.includes(model));
 }
 
 export function isStoryModelAllowedForRole(

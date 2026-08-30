@@ -1,14 +1,9 @@
 import { createServer, type Server } from 'node:http';
 import { createServer as createViteServer, type ViteDevServer } from 'vite';
-import { AUTH_LOGIN_PATH, AUTH_STATUS_PATH } from '../shared/authContract';
-import { PROVIDER_GATEWAY_PATH } from '../shared/providerContract';
-import {
-  AuthSessionAuthority,
-  createAuthRequestHandler,
-  isAuthPath,
-} from './authSession';
+import { GEMINI_PROFILES_PATH, PROVIDER_GATEWAY_PATH } from '../shared/providerContract';
 import {
   createProviderRequestHandler,
+  createGeminiProfilesRequestHandler,
   type ProviderGatewayDependencies,
 } from './providerGateway';
 
@@ -17,7 +12,6 @@ const DEFAULT_PREVIEW_PORT = 3000;
 export interface AiStudioPreviewServerOptions {
   env?: NodeJS.ProcessEnv;
   providerDependencies?: Omit<ProviderGatewayDependencies, 'env'>;
-  authAuthority?: AuthSessionAuthority;
 }
 
 export interface AiStudioPreviewServer {
@@ -50,43 +44,25 @@ export async function createAiStudioPreviewServer(
   options: AiStudioPreviewServerOptions = {},
 ): Promise<AiStudioPreviewServer> {
   const env = options.env || process.env;
-  const authAuthority = options.authAuthority || new AuthSessionAuthority({ env });
-  const handleAuthRequest = createAuthRequestHandler(authAuthority);
+  const handleProfilesRequest = createGeminiProfilesRequestHandler({ env, ...options.providerDependencies });
   const handleProviderRequest = createProviderRequestHandler({
     env,
     ...options.providerDependencies,
-    authorizeRequest: authAuthority.authorizeRequest,
   });
   const viteServer = await createViteServer({
     appType: 'spa',
     server: { middlewareMode: true },
   });
-  let observedAuthStatus = false;
-  let observedAuthLogin = false;
 
   const httpServer = createServer((request, response) => {
     const pathname = (request.url || '').split('?')[0];
-    if (isAuthPath(pathname) || pathname === PROVIDER_GATEWAY_PATH) {
+    if (pathname === PROVIDER_GATEWAY_PATH || pathname === GEMINI_PROFILES_PATH) {
       response.setHeader('X-Application-Server', 'node-preview');
     }
-    if (pathname === AUTH_STATUS_PATH && !observedAuthStatus && env.NODE_ENV !== 'test') {
-      observedAuthStatus = true;
-      response.once('finish', () => {
-        const contentType = response.getHeader('content-type') || 'unset';
-        console.log(`AI_STUDIO_AUTH_STATUS_REACHED status=${response.statusCode} content-type=${contentType}`);
-      });
-    }
-    if (pathname === AUTH_LOGIN_PATH && !observedAuthLogin && env.NODE_ENV !== 'test') {
-      observedAuthLogin = true;
-      response.once('finish', () => {
-        const contentType = response.getHeader('content-type') || 'unset';
-        console.log(`AI_STUDIO_AUTH_LOGIN_REACHED status=${response.statusCode} content-type=${contentType}`);
-      });
-    }
-    const operation = isAuthPath(pathname)
-      ? handleAuthRequest(request, response)
-      : pathname === PROVIDER_GATEWAY_PATH
+    const operation = pathname === PROVIDER_GATEWAY_PATH
         ? handleProviderRequest(request, response)
+        : pathname === GEMINI_PROFILES_PATH
+          ? handleProfilesRequest(request, response)
         : new Promise<void>((resolve, reject) => {
             viteServer.middlewares(request, response, error => {
               if (error) return reject(error);
